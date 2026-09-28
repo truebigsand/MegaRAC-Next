@@ -27,3 +27,7 @@ export function dropSession(token: string): BrowserSession | undefined {
 export function sessionCount(): number {
   return sessions.size;
 }
+
+export function allSessions(): BrowserSession[] {
+  return [...sessions.values()];
+}

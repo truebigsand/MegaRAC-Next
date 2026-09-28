@@ -19,6 +19,7 @@ export const router = createRouter({
         { path: 'power', name: 'power', component: () => import('./pages/PowerControl.vue') },
         { path: 'fans', name: 'fans', component: () => import('./pages/FanControl.vue') },
         { path: 'logs', name: 'logs', component: () => import('./pages/EventLog.vue') },
+        { path: 'history', name: 'history', component: () => import('./pages/History.vue') },
         { path: 'settings', name: 'settings', component: () => import('./pages/Settings.vue') },
       ],
     },

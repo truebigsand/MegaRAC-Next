@@ -2,17 +2,49 @@ import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import { randomUUID } from 'node:crypto';
 import { BmcClient, BmcSessionExpiredError } from './bmc.js';
-import { createSession, dropSession, getSession, sessionCount } from './sessions.js';
+import { createSession, dropSession, getSession, sessionCount, allSessions } from './sessions.js';
+import { SqliteHistoryStore } from './history/sqlite.js';
+import { HistorySampler } from './history/sampler.js';
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 5177);
 const COOKIE_NAME = 'mn_token';
+const HISTORY_DB = process.env.HISTORY_DB || 'data/history.sqlite3';
 
 const app = Fastify({
   logger: { level: 'info', transport: undefined },
 });
 
 await app.register(cookie);
+
+// ---------- 传感器历史（接口化存储，默认 SQLite） ----------
+const historyStore = new SqliteHistoryStore(HISTORY_DB);
+await historyStore.init();
+const sampler = new HistorySampler(historyStore);
+sampler.start(() => {
+  // 借用任一活跃浏览器会话的 BMC 客户端；无登录会话则本轮跳过
+  for (const s of allSessions()) return s.client;
+  return null;
+});
+
+// ---------- 历史查询 API ----------
+app.get('/api/history/sensors', async () => {
+  return { sensors: await historyStore.sensors() };
+});
+
+app.get('/api/history', async (req) => {
+  const q = req.query as { sensor?: string; minutes?: string };
+  if (!q.sensor) return reply0BadRequest('需要 sensor 参数');
+  const minutes = Math.min(Math.max(Number(q.minutes) || 60, 1), 60 * 24 * 31);
+  const points = await historyStore.query(q.sensor, Date.now() - minutes * 60_000);
+  return { sensor: q.sensor, minutes, points };
+});
+
+function reply0BadRequest(msg: string) {
+  const err = new Error(msg) as Error & { statusCode?: number };
+  err.statusCode = 400;
+  throw err;
+}
 
 app.addHook('onRequest', async (req, reply) => {
   if (req.url.startsWith('/bmc/')) {

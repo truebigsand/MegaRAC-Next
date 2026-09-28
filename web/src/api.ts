@@ -37,6 +37,12 @@ export async function bmcGet<T>(path: string): Promise<T> {
   return (await handle(res)) as T;
 }
 
+/** 代理自身提供的接口（非 BMC 转发），如 /api/history* */
+export async function localGet<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  return (await handle(res)) as T;
+}
+
 export async function bmcSend<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const res = await fetch('/bmc/' + path.replace(/^\/?api\//, ''), {
     method,
