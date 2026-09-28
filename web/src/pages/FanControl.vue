@@ -105,6 +105,9 @@ function markDirty() {
   drawCurve();
 }
 
+/** 正在编辑的档案与运行档案传感器类别不同、未叠加对照曲线 */
+const runCurveIncomparable = ref(false);
+
 /** 按固件顺序规范取曲线点（升序；DTS 源倒序）—— 图表与保存都以此顺序为准 */
 function orderedPoints(pol: FanPolicy): [number, number][] {
   const pairs = pol.arrRef.map((r, i) => [r, pol.arrDuty[i]] as [number, number]);
@@ -133,6 +136,10 @@ function drawCurve() {
   if (!pol || !chart) return;
   const runPol = profiles.value.find((p) => p.strName === mode.value)?.arrPolicy[0];
   const isEditingRunning = editing.value?.strName === mode.value;
+  // 传感器类别不同（温度余量 vs 真实温度）时两者刻度不同源，不能画在同一根轴上，
+  // 否则会被横轴方向镜像成"越热越慢"的假象 —— 此时不叠加对照曲线并给出说明
+  const sameKind = !!runPol && isDtsSource(pol) === isDtsSource(runPol);
+  runCurveIncomparable.value = !!runPol && !isEditingRunning && !sameKind;
   const stepOpt = isStepAlgo(pol.iPolicyType) ? ({ step: 'end' } as const) : {};
   const series: echarts.SeriesOption[] = [
     {
@@ -145,7 +152,7 @@ function drawCurve() {
       symbolSize: 8,
     },
   ];
-  if (runPol && !isEditingRunning) {
+  if (runPol && !isEditingRunning && sameKind) {
     series.push({
       name: `当前运行（${mode.value}）`,
       type: 'line',
@@ -857,6 +864,9 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         </n-space>
 
         <div ref="chartEl" :style="{ height: isMobile ? '240px' : '300px' }" />
+        <p v-if="runCurveIncomparable" class="warn" style="margin: 8px 0 0">
+          当前运行的档案使用不同类别的传感器（温度余量 vs 真实温度），刻度不同源、无法同轴比较，故未叠加显示。
+        </p>
 
         <template v-if="editing && pol">
           <n-space vertical size="medium" style="margin-top: 16px">
