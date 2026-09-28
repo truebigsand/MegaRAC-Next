@@ -17,6 +17,7 @@ const menuOptions = [
   { label: '风扇控制', key: 'fans' },
   { label: '事件日志', key: 'logs' },
   { label: '历史趋势', key: 'history' },
+  { label: 'KVM', key: 'kvm' },
   { label: '设置', key: 'settings' },
 ];
 
