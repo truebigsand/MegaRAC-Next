@@ -360,9 +360,9 @@ function allocateTs(n: number, shape: CurveShape, dts: boolean, mode: AllocMode)
 
 const showCurveEditor = ref(false);const previewEl = ref<HTMLDivElement>();
 let previewChart: echarts.ECharts | null = null;
-const curveForm = ref({
-  shape: 'standard' as CurveShape,
-  allocate: 'uniform' as AllocMode,
+const curveForm = ref<CurveForm>({
+  shape: 'standard',
+  allocate: 'uniform',
   samples: 6,
   x0: 40,
   x1: 85,
@@ -370,24 +370,58 @@ const curveForm = ref({
   y1: 100,
 });
 
+/** 曲线编辑器的表单参数；同一档案再次打开时沿用上次用过的值 */
+interface CurveForm {
+  shape: CurveShape;
+  allocate: AllocMode;
+  samples: number;
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+/** 记住每个档案最近一次用过的参数（页面会话内） */
+const curveFormMemory = new Map<string, CurveForm>();
+
+function rememberCurveForm() {
+  const name = editing.value?.strName;
+  if (name) curveFormMemory.set(name, { ...curveForm.value });
+}
+
 function openCurveEditor() {
   const pol0 = pol.value;
   if (!pol0) return;
+
+  // 同一档案：沿用上次的参数（含占空比范围），不再每次重置
+  const remembered = curveFormMemory.get(editing.value?.strName ?? '');
+  if (remembered) {
+    curveForm.value = { ...remembered };
+    showCurveEditor.value = true;
+    return;
+  }
+
+  // 换档案/首次打开：读数与占空比范围都从当前档案推导
   const refs = pol0.arrRef.filter((r) => Number.isFinite(r));
   const duties = pol0.arrDuty.filter((d) => Number.isFinite(d));
-  // 读数范围默认沿用当前点范围；没有点时给一个常见温度区间
-  if (refs.length >= 2) {
-    curveForm.value.x0 = Math.min(...refs);
-    curveForm.value.x1 = Math.max(...refs);
-  } else {
-    curveForm.value.x0 = isDtsSource(pol0) ? 50 : 40;
-    curveForm.value.x1 = isDtsSource(pol0) ? 10 : 85;
+  const dts = isDtsSource(pol0);
+  const x0 = refs.length >= 2 ? Math.min(...refs) : dts ? 50 : 40;
+  const x1 = refs.length >= 2 ? Math.max(...refs) : dts ? 10 : 85;
+  let y0 = duties.length >= 1 ? Math.min(...duties) : 30;
+  let y1 = duties.length >= 1 ? Math.max(...duties) : 100;
+  // 档案占空比过于集中（如恒速档案全是 1%）时，给一个便于作图的起点范围
+  if (y1 - y0 < 5) {
+    y0 = 30;
+    y1 = 100;
   }
-  if (duties.length >= 2) {
-    curveForm.value.y0 = 30;
-    curveForm.value.y1 = 100;
-  }
-  curveForm.value.samples = Math.max(2, Math.min(MAX_REFS, refs.length || 6));
+  curveForm.value = {
+    shape: 'standard',
+    allocate: 'uniform',
+    samples: Math.max(2, Math.min(MAX_REFS, refs.length || 6)),
+    x0,
+    x1,
+    y0,
+    y1,
+  };
   showCurveEditor.value = true;
 }
 
@@ -419,6 +453,7 @@ function initPreview() {
 }
 
 function disposePreview() {
+  rememberCurveForm();
   previewChart?.dispose();
   previewChart = null;
 }
@@ -492,6 +527,7 @@ function applyCurve() {
   p.arrDuty = s.duties;
   normalizeOrder(p);
   markDirty();
+  rememberCurveForm();
   showCurveEditor.value = false;
   message.success(`已填充 ${s.refs.length} 个数据点，确认后点「保存到 BMC」写入`);
 }
