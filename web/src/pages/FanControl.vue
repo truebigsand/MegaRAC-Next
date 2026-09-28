@@ -98,11 +98,32 @@ function markDirty() {
   drawCurve();
 }
 
+/** 按固件顺序规范取曲线点（升序；DTS 源倒序）—— 图表与保存都以此顺序为准 */
+function orderedPoints(pol: FanPolicy): [number, number][] {
+  const pairs = pol.arrRef.map((r, i) => [r, pol.arrDuty[i]] as [number, number]);
+  pairs.sort((a, b) => a[0] - b[0]);
+  if (isDtsSource(pol)) pairs.reverse();
+  return pairs;
+}
+
+/** 曲线点是否非单调（有回折）——只有这种顺序会让曲线图出现折返线 */
+const orderNonMonotonic = computed(() => {
+  const refs = editing.value?.arrPolicy[0]?.arrRef ?? [];
+  if (refs.length < 3) return false;
+  let dir = 0;
+  for (let i = 1; i < refs.length; i++) {
+    const d = Math.sign(refs[i] - refs[i - 1]);
+    if (d === 0) continue;
+    if (dir === 0) dir = d;
+    else if (d !== dir) return true;
+  }
+  return false;
+});
+
 // ---------- 曲线图 ----------
 function drawCurve() {
   const pol = editing.value?.arrPolicy[0];
   if (!pol || !chart) return;
-  const points = pol.arrRef.map((r, i) => [r, pol.arrDuty[i]]);
   const runPol = profiles.value.find((p) => p.strName === mode.value)?.arrPolicy[0];
   const isEditingRunning = editing.value?.strName === mode.value;
   const series: echarts.SeriesOption[] = [
@@ -110,7 +131,7 @@ function drawCurve() {
       name: isEditingRunning ? '当前运行' : '编辑中',
       type: 'line',
       step: 'end',
-      data: points,
+      data: orderedPoints(pol),
       lineStyle: { color: '#63e2b7', width: 2 },
       itemStyle: { color: '#63e2b7' },
       symbolSize: 8,
@@ -121,7 +142,7 @@ function drawCurve() {
       name: `当前运行（${mode.value}）`,
       type: 'line',
       step: 'end',
-      data: runPol.arrRef.map((r, i) => [r, runPol.arrDuty[i]]),
+      data: orderedPoints(runPol),
       lineStyle: { color: '#888', type: 'dashed' },
       itemStyle: { color: '#888' },
       symbolSize: 4,
@@ -461,7 +482,13 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
             </n-space>
 
             <div>
-              <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
+              <n-space align="center" :size="8">
+                <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
+                <template v-if="orderNonMonotonic">
+                  <span class="warn">Reference 有回折：图表按排序后绘制，保存时自动重排</span>
+                  <n-button size="tiny" tertiary @click="normalizeOrder(pol); markDirty()">立即重排</n-button>
+                </template>
+              </n-space>
               <n-space vertical size="small" style="margin-top: 8px">
                 <n-space v-for="(_, i) in pol.arrRef" :key="i" align="center" :size="8">
                   <span class="pt">点 {{ i }}</span>
@@ -563,6 +590,10 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 }
 .unit {
   color: #777;
+  font-size: 12px;
+}
+.warn {
+  color: #f0a020;
   font-size: 12px;
 }
 .pt {
