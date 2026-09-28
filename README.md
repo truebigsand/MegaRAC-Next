@@ -11,15 +11,25 @@
 - **工作流**：git 仓库，每完成一个可验证里程碑自动 commit
 - **界面**：简体中文，暗色默认可切亮色
 
-## 开发顺序
+## 开发顺序（全部完成 ✅，写操作待验证后开放）
 
 1. ✅ 逆向 + API 文档（`docs/API.md`）
-2. Fastify 代理 + 透传登录
-3. 仪表盘 / 传感器 / 电源页
-4. 风扇控制页（曲线编辑器）
-5. 传感器历史落盘（HistoryStore 接口 + SQLite）
-6. 设置页（FRU/用户/网络/NTP）
-7. KVM（现成库调研 → 自研 → 跳转兜底）
+2. ✅ Fastify 代理 + 透传登录
+3. ✅ 仪表盘 / 传感器 / 电源页
+4. ✅ 风扇控制页（曲线编辑器）
+5. ✅ 传感器历史落盘（HistoryStore 接口 + SQLite，`server/data/history.sqlite3`）
+6. ✅ 设置页（FRU/用户/网络/NTP/服务，只读）
+7. ✅ KVM（调研归档 + 跳转原版兜底；自研放 v2）
+
+## 启动
+
+```bash
+npm install
+npm run dev:server   # Fastify 代理 @ 127.0.0.1:5177
+npm run dev:web      # Vue3 @ http://localhost:5173
+```
+
+写操作开关：`web/src/config.ts` 的 `WRITE_OPS_ENABLED`（默认 false，按纪律待用户在原版 UI 对照验证后开启）。
 
 ## 目录
 
