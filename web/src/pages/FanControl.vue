@@ -321,10 +321,48 @@ function makeEvaluator(pairs: { ref: number; duty: number }[], algo: number | un
   };
 }
 
+type AllocMode = 'uniform' | 'adaptive';
+const allocOptions: { label: string; value: AllocMode }[] = [
+  { label: '等距取点', value: 'uniform' },
+  { label: '自动取点（陡处加密）', value: 'adaptive' },
+];
+
+/**
+ * 在 t∈[0,1] 上分配 n 个取样位置（含两端）。
+ * uniform：等距；adaptive：按曲线累积占空比变化量等分 —— 斜率越大处点越密，
+ * 平缓段只保留端点；恒定曲线（总变化≈0）退回等距。
+ */
+function allocateTs(n: number, shape: CurveShape, dts: boolean, mode: AllocMode): number[] {
+  const uniform = () => Array.from({ length: n }, (_, i) => (n === 1 ? 0 : i / (n - 1)));
+  if (mode === 'uniform' || n <= 2) return uniform();
+
+  const K = 240;
+  const ys = Array.from({ length: K + 1 }, (_, k) => curveRatio(shape, dts ? 1 - k / K : k / K));
+  const cum: number[] = [0];
+  for (let k = 0; k < K; k++) cum.push(cum[k] + Math.abs(ys[k + 1] - ys[k]));
+  const total = cum[K];
+  if (!(total > 1e-6)) return uniform();
+
+  const ts: number[] = [];
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const target = (total * i) / (n - 1);
+    while (k < K && cum[k + 1] < target) k++;
+    if (k >= K) {
+      ts.push(1);
+      continue;
+    }
+    const seg = cum[k + 1] - cum[k];
+    ts.push((k + (seg > 0 ? (target - cum[k]) / seg : 0)) / K);
+  }
+  return ts;
+}
+
 const showCurveEditor = ref(false);const previewEl = ref<HTMLDivElement>();
 let previewChart: echarts.ECharts | null = null;
 const curveForm = ref({
   shape: 'standard' as CurveShape,
+  allocate: 'uniform' as AllocMode,
   samples: 6,
   x0: 40,
   x1: 85,
@@ -361,8 +399,7 @@ function buildSamples(): { refs: number[]; duties: number[] } {
   const n = Math.max(2, Math.min(MAX_REFS, Math.round(f.samples)));
   const refs: number[] = [];
   const duties: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const t = i / (n - 1);
+  for (const t of allocateTs(n, f.shape, dts, f.allocate)) {
     const x = Math.round(f.x0 + (f.x1 - f.x0) * t);
     // DTS 是温度余量（越小越热），把曲线按「越热越快」的方向映射
     const y = Math.round(f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t));
@@ -1008,6 +1045,17 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               :options="shapeOptions"
               size="small"
               style="min-width: 170px"
+              @update:value="drawPreview"
+            />
+          </div>
+          <div class="field">
+            <span class="lbl">取点方式</span>
+            <n-select
+              class="ctrl"
+              v-model:value="curveForm.allocate"
+              :options="allocOptions"
+              size="small"
+              style="min-width: 190px"
               @update:value="drawPreview"
             />
           </div>
