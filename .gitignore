@@ -1,0 +1,19 @@
+# AMI 版权的前端产物，只本地分析、不入库
+reverse/source.min.js
+reverse/viewer.min.js
+reverse/styles.min.css
+reverse/viewer.html
+
+# Node
+node_modules/
+dist/
+
+# 运行期产物
+.env
+*.sqlite3
+*.sqlite3-journal
+data/
+
+# 系统
+Thumbs.db
+.DS_Store
