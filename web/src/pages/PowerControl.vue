@@ -3,6 +3,9 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { NCard, NButton, NSpace, NAlert, NTag, useDialog, useMessage } from 'naive-ui';
 import { bmcGet, bmcSend } from '../api';
 import type { ChassisStatus } from '../types';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 const dialog = useDialog();
 const message = useMessage();
@@ -70,6 +73,7 @@ onBeforeUnmount(() => {
           :type="a.danger ? 'error' : 'primary'"
           :secondary="!a.danger"
           :disabled="a.cmd === 1 && powerStatus === 1"
+          :style="isMobile ? 'flex: 1 1 40%' : undefined"
           @click="confirmAndSend(a)"
         >
           {{ a.label }}

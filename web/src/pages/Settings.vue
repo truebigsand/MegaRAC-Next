@@ -3,6 +3,9 @@ import { h, onBeforeUnmount, onMounted, ref } from 'vue';
 import { NTabs, NTabPane, NDataTable, NDescriptions, NDescriptionsItem, NTag } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { bmcGet } from '../api';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 interface FruDevice {
   device: { id: number; name: string };
@@ -135,14 +138,14 @@ onBeforeUnmount(() => {
 <template>
   <n-space vertical size="large">
     <n-card title="设置" size="small">
-      <n-tabs type="line" animated>
-        <n-tab-pane name="fru" tab="FRU 信息">
+      <n-tabs type="line" animated :tabs-padding="isMobile ? 10 : 16">
+        <n-tab-pane name="fru" :tab="isMobile ? 'FRU' : 'FRU 信息'">
           <n-descriptions
             v-for="d in fru"
             :key="d.device.id"
             :title="d.device.name"
             bordered
-            :column="2"
+            :column="isMobile ? 1 : 2"
             size="small"
             style="margin-bottom: 16px"
           >
@@ -155,16 +158,16 @@ onBeforeUnmount(() => {
           </n-descriptions>
         </n-tab-pane>
 
-        <n-tab-pane name="users" tab="用户管理">
-          <n-data-table :columns="userColumns" :data="users" size="small" :bordered="false" />
+        <n-tab-pane name="users" :tab="isMobile ? '用户' : '用户管理'">
+          <n-data-table :columns="userColumns" :data="users" size="small" :bordered="false" :scroll-x="isMobile ? 620 : undefined" />
         </n-tab-pane>
 
         <n-tab-pane name="network" tab="网络">
-          <n-data-table :columns="netColumns" :data="network" size="small" :bordered="false" />
+          <n-data-table :columns="netColumns" :data="network" size="small" :bordered="false" :scroll-x="isMobile ? 800 : undefined" />
         </n-tab-pane>
 
-        <n-tab-pane name="datetime" tab="日期时间">
-          <n-descriptions bordered :column="2" size="small">
+        <n-tab-pane name="datetime" :tab="isMobile ? '时间' : '日期时间'">
+          <n-descriptions bordered :column="isMobile ? 1 : 2" size="small">
             <n-descriptions-item label="时区">{{ datetime?.timezone ?? '—' }}</n-descriptions-item>
             <n-descriptions-item label="NTP">
               <n-tag size="small" :type="datetime?.ntp_auto_date === 1 ? 'success' : 'warning'">
@@ -178,7 +181,7 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="services" tab="服务">
-          <n-data-table :columns="serviceColumns" :data="services" size="small" :bordered="false" />
+          <n-data-table :columns="serviceColumns" :data="services" size="small" :bordered="false" :scroll-x="isMobile ? 520 : undefined" />
         </n-tab-pane>
       </n-tabs>
     </n-card>

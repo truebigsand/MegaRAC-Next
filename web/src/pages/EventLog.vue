@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { h, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import { NCard, NDataTable, NTag } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { bmcGet } from '../api';
 import type { SelEvent } from '../types';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 const events = ref<SelEvent[]>([]);
 const loading = ref(true);
@@ -17,10 +20,10 @@ function fmtTime(ts: number): string {
   return new Date(ms).toLocaleString('zh-CN', { hour12: false });
 }
 
-const columns: DataTableColumns<SelEvent> = [
+const columns = computed<DataTableColumns<SelEvent>>(() => [
   { title: 'ID', key: 'id', width: 70, sorter: (a, b) => b.id - a.id },
-  { title: '时间', key: 'timestamp', width: 180, render: (e) => fmtTime(e.timestamp) },
-  { title: '传感器', key: 'sensor_name', width: 200 },
+  { title: '时间', key: 'timestamp', width: isMobile.value ? 140 : 180, render: (e) => fmtTime(e.timestamp) },
+  { title: '传感器', key: 'sensor_name', width: isMobile.value ? 130 : 200 },
   {
     title: '方向',
     key: 'event_direction',
@@ -33,7 +36,7 @@ const columns: DataTableColumns<SelEvent> = [
     },
   },
   { title: '描述', key: 'description', ellipsis: { tooltip: true } },
-];
+]);
 
 async function refresh() {
   try {
@@ -57,15 +60,19 @@ onBeforeUnmount(() => {
 <template>
   <n-card title="IPMI 事件日志 (SEL)">
     <template #header-extra>
-      <span class="dim">共 {{ events.length }} 条 · 10s 自动刷新 · SEL 已满（1022 条上限）</span>
+      <span v-if="!isMobile" class="dim">共 {{ events.length }} 条 · 10s 自动刷新 · SEL 已满（1022 条上限）</span>
     </template>
+    <p v-if="isMobile" class="dim" style="margin: 0 0 10px">
+      共 {{ events.length }} 条 · 10s 自动刷新 · SEL 已满（1022 条上限）
+    </p>
     <n-data-table
       :columns="columns"
       :data="events"
       :loading="loading"
       size="small"
-      :pagination="{ pageSize: 50 }"
+      :pagination="{ pageSize: isMobile ? 20 : 50 }"
       :bordered="false"
+      :scroll-x="isMobile ? 620 : undefined"
     />
   </n-card>
 </template>

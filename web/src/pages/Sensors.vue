@@ -4,6 +4,9 @@ import { NDataTable, NSelect, NTag, NCard } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { bmcGet } from '../api';
 import type { Sensor } from '../types';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 const sensors = ref<Sensor[]>([]);
 const filterType = ref<string>('all');
@@ -51,16 +54,7 @@ function unitShort(unit: string): string {
   return UNIT_SHORT[unit.toLowerCase()] ?? unit;
 }
 
-const columns: DataTableColumns<Sensor> = [
-  { title: 'ID', key: 'sensor_number', width: 60 },
-  { title: '名称', key: 'name', width: 180 },
-  {
-    title: '读数',
-    key: 'reading',
-    width: 120,
-    render: (s) => `${s.reading} ${unitShort(s.unit)}`,
-  },
-  { title: '状态', key: 'state', width: 80, render: (s) => { const t = stateTag(s); return h(NTag, { size: 'small', type: t.type }, { default: () => t.label }); } },
+const thresholdColumns: DataTableColumns<Sensor> = [
   { title: '下限(不可恢复)', key: 'lnr', width: 130, render: (s) => thresholdText(s.lower_non_recoverable_threshold) },
   { title: '下限(严重)', key: 'lcr', width: 110, render: (s) => thresholdText(s.lower_critical_threshold) },
   { title: '下限(非严重)', key: 'lnc', width: 120, render: (s) => thresholdText(s.lower_non_critical_threshold) },
@@ -68,6 +62,20 @@ const columns: DataTableColumns<Sensor> = [
   { title: '上限(严重)', key: 'hcr', width: 110, render: (s) => thresholdText(s.higher_critical_threshold) },
   { title: '上限(不可恢复)', key: 'hnr', width: 130, render: (s) => thresholdText(s.higher_non_recoverable_threshold) },
 ];
+
+// 窄屏只保留核心列（阈值列在手机上横滑体验差），桌面端展示全部列
+const columns = computed<DataTableColumns<Sensor>>(() => [
+  { title: 'ID', key: 'sensor_number', width: isMobile.value ? 46 : 60 },
+  { title: '名称', key: 'name', width: isMobile.value ? 128 : 180 },
+  {
+    title: '读数',
+    key: 'reading',
+    width: isMobile.value ? 88 : 110,
+    render: (s) => `${s.reading} ${unitShort(s.unit)}`,
+  },
+  { title: '状态', key: 'state', width: isMobile.value ? 66 : 80, render: (s) => { const t = stateTag(s); return h(NTag, { size: 'small', type: t.type }, { default: () => t.label }); } },
+  ...(isMobile.value ? [] : thresholdColumns),
+]);
 
 const filtered = computed(() =>
   filterType.value === 'all' ? sensors.value : sensors.value.filter((s) => s.unit === filterType.value),
@@ -95,6 +103,13 @@ onBeforeUnmount(() => {
     <template #header-extra>
       <n-select v-model:value="filterType" :options="typeOptions" style="width: 160px" size="small" />
     </template>
-    <n-data-table :columns="columns" :data="filtered" :bordered="false" size="small" :pagination="false" />
+    <n-data-table
+      :columns="columns"
+      :data="filtered"
+      :bordered="false"
+      size="small"
+      :pagination="false"
+      :scroll-x="isMobile ? 328 : undefined"
+    />
   </n-card>
 </template>

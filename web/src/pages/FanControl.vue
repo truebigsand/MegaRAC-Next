@@ -8,6 +8,9 @@ import type { UploadFileInfo } from 'naive-ui';
 import * as echarts from 'echarts';
 import { bmcGet, bmcSend } from '../api';
 import type { FanProfile, FanPolicy, Sensor } from '../types';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 const message = useMessage();
 const dialog = useDialog();
@@ -535,7 +538,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 
       <n-card title="风扇设定档">
         <template #header-extra>
-          <n-space>
+          <n-space v-if="!isMobile">
             <n-select
               :value="selectedName || null"
               :options="profileOptions"
@@ -558,13 +561,38 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
           </n-space>
         </template>
 
-        <div ref="chartEl" style="height: 300px" />
+        <!-- 窄屏：操作按钮下移到内容区，避免挤压卡片标题 -->
+        <n-space v-if="isMobile" vertical size="small" style="margin-bottom: 12px">
+          <n-select
+            :value="selectedName || null"
+            :options="profileOptions"
+            placeholder="选择设定档"
+            style="width: 100%"
+            size="small"
+            @update:value="onTabSelect"
+          />
+          <n-space :size="8">
+            <n-button size="small" @click="loadForEdit(null)">新建</n-button>
+            <n-button size="small" :disabled="!selectedName" @click="playProfile(selectedName)">
+              {{ isRunning ? '重新应用' : '应用' }}
+            </n-button>
+            <n-button size="small" :disabled="mode === 'default'" @click="stopProfile">停止</n-button>
+            <n-popconfirm v-if="current" @positive-click="deleteProfile(selectedName)">
+              <template #trigger>
+                <n-button size="small" type="error" secondary :disabled="isRunning">删除</n-button>
+              </template>
+              确认删除「{{ selectedName }}」？
+            </n-popconfirm>
+          </n-space>
+        </n-space>
+
+        <div ref="chartEl" :style="{ height: isMobile ? '240px' : '300px' }" />
 
         <template v-if="editing && pol">
           <n-space vertical size="medium" style="margin-top: 16px">
             <n-space align="center" :size="16">
               <span class="lbl">设定档名称</span>
-              <n-input v-model:value="editing.strName" size="small" style="width: 200px" @update:value="markDirty" />
+              <n-input v-model:value="editing.strName" size="small" :style="isMobile ? 'width: 140px' : 'width: 200px'" @update:value="markDirty" />
               <span class="lbl">初始 Duty (%)</span>
               <n-input-number v-model:value="pol.iInitDuty" size="small" :min="0" :max="100" @update:value="markDirty" />
               <span class="lbl">滞回 iHysteresis</span>
@@ -578,7 +606,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 :options="tempSensorOptions"
                 multiple
                 size="small"
-                style="min-width: 280px"
+                :style="isMobile ? 'width: 100%' : 'min-width: 280px'"
                 placeholder="选择温度源"
                 @update:value="markDirty"
               />
@@ -588,7 +616,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 :options="fanSensorOptions"
                 multiple
                 size="small"
-                style="min-width: 280px"
+                :style="isMobile ? 'width: 100%' : 'min-width: 280px'"
                 placeholder="选择风扇"
                 @update:value="markDirty"
               />
@@ -605,9 +633,9 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               <n-space vertical size="small" style="margin-top: 8px">
                 <n-space v-for="(_, i) in pol.arrRef" :key="i" align="center" :size="8">
                   <span class="pt">点 {{ i }}</span>
-                  <n-input-number v-model:value="pol.arrRef[i]" size="small" style="width: 120px" @update:value="markDirty" />
+                  <n-input-number v-model:value="pol.arrRef[i]" size="small" :style="isMobile ? 'width: 84px' : 'width: 120px'" @update:value="markDirty" />
                   <span>→</span>
-                  <n-input-number v-model:value="pol.arrDuty[i]" size="small" style="width: 110px" :min="0" :max="100" @update:value="markDirty">
+                  <n-input-number v-model:value="pol.arrDuty[i]" size="small" :style="isMobile ? 'width: 84px' : 'width: 110px'" :min="0" :max="100" @update:value="markDirty">
                     <template #suffix>%</template>
                   </n-input-number>
                   <n-button size="tiny" quaternary type="error" :disabled="pol.arrRef.length <= 1" @click="removePoint(i)">删除</n-button>
@@ -617,7 +645,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                   <n-button
                     dashed
                     size="small"
-                    style="width: 256px"
+                    :style="isMobile ? 'width: 190px' : 'width: 256px'"
                     :disabled="pol.arrRef.length >= MAX_REFS"
                     @click="addPoint"
                   >
@@ -645,7 +673,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 v-model:value="pol.iAmbientSensor"
                 :options="ambientOptions"
                 size="small"
-                style="width: 200px"
+                :style="isMobile ? 'width: 100%' : 'width: 200px'"
                 @update:value="markDirty"
               />
               <n-space v-if="pol.iAmbientSensor > 0" align="center" :size="4">
@@ -666,7 +694,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               :options="pcieDevices.map((d) => ({ label: `${d.strName} (${d.hexVendorID}:${d.hexDeviceID})`, value: d.hexDeviceID }))"
               multiple
               size="small"
-              style="max-width: 500px"
+              :style="isMobile ? 'width: 100%' : 'max-width: 500px'"
               placeholder="选择设备（按 DeviceID 匹配）"
               @update:value="markDirty"
             />

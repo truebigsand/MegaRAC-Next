@@ -3,6 +3,9 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { NCard, NSelect, NSpace, NSpin, NEmpty } from 'naive-ui';
 import * as echarts from 'echarts';
 import { localGet } from '../api';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 const available = ref<string[]>([]);
 const picked = ref<string[]>(['CPU0_TEMP', 'CPU0_DTS', 'CPU0_FAN']);
@@ -57,7 +60,7 @@ async function refresh() {
         tooltip: { trigger: 'axis' },
         legend: { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
         grid: { left: 60, right: 20, top: 36, bottom: 40 },
-        xAxis: { type: 'time', axisLabel: { color: '#888' } },
+        xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true } },
         yAxis: { type: 'value', scale: true, axisLabel: { color: '#888' } },
         series,
       },
@@ -93,20 +96,20 @@ onBeforeUnmount(() => {
         <n-alert v-if="available.length === 0 && !loading" type="info" :bordered="false">
           暂无历史数据，登录后约 30 秒开始积累。
         </n-alert>
-        <n-space align="center">
+        <n-space align="center" :size="12">
           <n-select
             v-model:value="picked"
             :options="available.map((s) => ({ label: s, value: s }))"
             multiple
             filterable
-            :max-tag-count="4"
+            :max-tag-count="isMobile ? 2 : 4"
             size="small"
-            style="min-width: 420px"
+            :style="isMobile ? 'width: 100%' : 'min-width: 420px'"
             placeholder="选择传感器"
           />
-          <n-select v-model:value="windowMinutes" :options="windowOptions" size="small" style="width: 150px" />
+          <n-select v-model:value="windowMinutes" :options="windowOptions" size="small" :style="isMobile ? 'width: 100%' : 'width: 150px'" />
         </n-space>
-        <div v-if="picked.length > 0" ref="chartEl" style="height: 380px" />
+        <div v-if="picked.length > 0" ref="chartEl" :style="{ height: isMobile ? '260px' : '380px' }" />
         <n-empty v-else description="选择要查看的传感器" />
       </n-space>
     </n-card>

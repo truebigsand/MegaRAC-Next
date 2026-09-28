@@ -45,8 +45,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div style="height: 100vh; display: flex; align-items: center; justify-content: center">
-    <n-card title="MegaRAC Next · 登录" style="width: 380px" :bordered="true">
+  <div style="height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box">
+    <n-card title="MegaRAC Next · 登录" style="width: min(380px, 100%)" :bordered="true">
       <n-form @submit.prevent="onSubmit">
         <n-form-item label="BMC 用户名">
           <n-input v-model:value="username" placeholder="admin" />

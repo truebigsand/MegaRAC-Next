@@ -4,6 +4,9 @@ import { NCard, NGrid, NGi, NSpace, NStatistic, NTag, NAlert, NSpin } from 'naiv
 import * as echarts from 'echarts';
 import { bmcGet } from '../api';
 import type { ChassisStatus, FirmwareInfo, Sensor, Uptime } from '../types';
+import { useIsMobile } from '../useMediaQuery';
+
+const isMobile = useIsMobile();
 
 const firmware = ref<FirmwareInfo | null>(null);
 const uptime = ref<Uptime | null>(null);
@@ -50,7 +53,7 @@ function lineOption(map: Map<string, { t: number; v: number }[]>, yName: string)
     tooltip: { trigger: 'axis' },
     legend: { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
     grid: { left: 44, right: 12, top: 30, bottom: 24 },
-    xAxis: { type: 'time', axisLabel: { color: '#888' } },
+    xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true } },
     yAxis: { type: 'value', name: yName, nameTextStyle: { color: '#888' }, axisLabel: { color: '#888' }, scale: true },
     series,
   };
@@ -125,7 +128,7 @@ onBeforeUnmount(() => {
       <n-alert v-if="powerStatus === 1" type="success" :bordered="false">主机已上电</n-alert>
       <n-alert v-else-if="powerStatus === 0" type="warning" :bordered="false">主机关机 / 未上电</n-alert>
 
-      <n-grid :cols="4" :x-gap="12">
+      <n-grid :cols="isMobile ? 1 : 4" :x-gap="12" :y-gap="12">
         <n-gi>
           <n-card size="small">
             <n-statistic label="BMC 固件" :value="firmware?.fw_ver ?? '—'" />
@@ -151,15 +154,15 @@ onBeforeUnmount(() => {
         </n-gi>
       </n-grid>
 
-      <n-grid :cols="2" :x-gap="12">
+      <n-grid :cols="isMobile ? 1 : 2" :x-gap="12" :y-gap="12">
         <n-gi>
           <n-card title="温度趋势" size="small">
-            <div ref="tempChartEl" style="height: 240px" />
+            <div ref="tempChartEl" :style="{ height: isMobile ? '200px' : '240px' }" />
           </n-card>
         </n-gi>
         <n-gi>
           <n-card title="风扇转速" size="small">
-            <div ref="fanChartEl" style="height: 240px" />
+            <div ref="fanChartEl" :style="{ height: isMobile ? '200px' : '240px' }" />
           </n-card>
         </n-gi>
       </n-grid>
