@@ -3,7 +3,7 @@
 > 逆向对象：`https://192.168.0.200`（技嘉 MZ32-AR0-00 / EPYC 7R32 的 BMC）
 > 固件：AMI MegaRAC SP-X "Scorpio"，Web 显示 12.41.11（fw-info 报 12.65，IPMI rev 12/65），构建日期 Mar 20 2020
 > 逆向方法：前端 bundle 静态分析（`reverse/source.min.js`、`reverse/viewer.min.js`）+ Playwright 页面走查 + 只读 API 实测（`reverse/probe_api.mjs`，全部样本存于 `reverse/samples/probe_results.json`）
-> **纪律**：本文档中除登录/注销外的所有请求均为 GET 实测。所有写操作（POST/PUT/DELETE）协议仅从 bundle 逆向得来，**未对真实 BMC 验证过**，标注为【未实测】。
+> **纪律**：本文档数据端点均为 GET 实测；写操作协议在 2026-09-28 后逐步实测（风扇档案写入/切换已验证，见 §3），未验证者标注【未实测】。
 
 ---
 
@@ -132,11 +132,29 @@ Bundle 中 `models/chassis_status`：
 - Policy Execute Condition：CPU Tdp (W) / Ambient Sensor / PCIE Device（设备库 device_define）
 - Policy Reference Table：**Reference ↔ Duty (%) 四组点对**（43→30%、30→75%、20→90%、7→100%）
 - 页面还有：新增/编辑/复制/删除 profile、播放（应用）/停止、**导入/导出配置文件**、"支持PCIE设备"开关
-- ⚠️ Reference 轴的精确插值语义（Slope 下 Reference 是温度点还是相对余量）待后续用只读数据模拟验证；写操作（PUT/POST collection/mode/播放）在 bundle 中存在但按纪律未实测。
+
+### ✅ 写协议（2026-09-28 实测验证通过）
+
+```
+新建档案: POST /api/settings/fanprofile/collection
+          body = 单个档案对象（含 strVersion/strName/arrPolicy[]），HTTP 200 返回写入后的对象
+切换运行: POST /api/settings/fanprofile/mode
+          body = {"strMode":"<档案名>"}，HTTP 200 返回 {"strMode":"<档案名>"}
+停止/回退: 同上传 strMode:"default"
+```
+实测记录：以 default 为模板新增 `CPU_TEMP` 档案并切换运行模式，写入与切换均 200；写入后 `GET collection` 可见新档案，`GET mode` 返回 CPU_TEMP；风扇转速按新档案生效（30 秒观察稳定）。
+备份：写入前的档案与运行模式已存 `reverse/profiles/backup-*.json`。
+
+### DTS ↔ CPU_TEMP 等效换算（实测）
+
+- `CPU0_DTS` 是 AMD 温度余量（= 临界温度 100°C − CPU 实际温度），越小越热；60/60 组历史采样验证 **CPU0_TEMP + CPU0_DTS ≡ 100**
+- 因此 default 档案曲线 `[43,30,20,7]` 在 CPU_TEMP 坐标下等效于 `[57,70,80,93]`，Duty `[30,75,90,100]` 不变
+- `arrSensor` 用 **sensor_number**：CPU0_TEMP=1、CPU0_DTS=12；被控风扇 `arrFanSensor`=[184,186,187,188,189,190]（CPU0_FAN+SYS_FAN1~5）
+- 曲线数组按「冷端→热端」排列（default 用 DTS 时因余量递减而呈降序；换 CPU_TEMP 后为升序），读值超出两端时钳位到端点对应 Duty
 
 ### 已知坑
 - SMASH CLI 的 `set` 对风扇目标各种写法报语法错误 → 曲线只能在 Web API 层做（本项目的核心价值点）
-- BMC 无转速 PID 曲线 UI（原版编辑页即曲线编辑器，但极其简陋、无实时预览）→ 新 UI 做现代曲线编辑器 + 实时读数叠加
+- 原版编辑页即曲线编辑器，但极其简陋、无实时预览 → 新 UI 提供现代曲线编辑器 + 实时读数叠加
 
 ---
 
