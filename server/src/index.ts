@@ -6,7 +6,7 @@ import { createSession, dropSession, getSession, sessionCount, allSessions } fro
 import { SqliteHistoryStore } from './history/sqlite.js';
 import { HistorySampler } from './history/sampler.js';
 
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
 const COOKIE_NAME = 'mn_token';
 const HISTORY_DB = process.env.HISTORY_DB || 'data/history.sqlite3';

@@ -25,9 +25,12 @@
 
 ```bash
 npm install
-npm run dev:server   # Fastify 代理 @ 127.0.0.1:5177
-npm run dev:web      # Vue3 @ http://localhost:5173
+npm run dev:server   # Fastify 代理，监听 0.0.0.0:5177（HOST/PORT 可用环境变量覆盖）
+npm run dev:web      # Vue3 开发服务器，监听 0.0.0.0:5173
 ```
+
+两端默认监听所有网卡，同一局域网（或 Tailscale 网段）内可直接用本机 IP 访问，
+例如 `http://192.168.0.101:5173`。访问者仍需输入 BMC 账号密码登录，代理不保存凭证。
 
 写操作：已全部启用（电源控制/风扇写入均有二次确认弹窗兜底）。
 
