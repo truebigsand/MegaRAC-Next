@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
-  NCard, NAlert, NSelect, NSpace, NSpin, NTag, NButton, NInputNumber, NInputGroup,
-  NModal, NForm, NFormItem, NInput, NCheckbox, NPopconfirm, NUpload, NUploadDragger, useDialog, useMessage,
+  NCard, NAlert, NSelect, NSpace, NSpin, NTag, NButton, NInputNumber,
+  NInput, NCheckbox, NPopconfirm, NUpload, useDialog, useMessage,
 } from 'naive-ui';
 import type { UploadFileInfo } from 'naive-ui';
 import * as echarts from 'echarts';
@@ -24,6 +24,8 @@ let timer: ReturnType<typeof setInterval> | null = null;
 
 // ---------- 编辑状态（当前 profile 的深拷贝） ----------
 const editing = ref<FanProfile | null>(null);
+/** 编辑器当前内容对应的服务端档案名；null = 新建中（尚未保存） */
+const sourceName = ref<string | null>(null);
 const dirty = ref(false);
 
 const current = computed(() => profiles.value.find((p) => p.strName === selectedName.value));
@@ -56,15 +58,29 @@ function newProfile(name: string): FanProfile {
   };
 }
 
+function nextNewName(): string {
+  const base = 'NEW_PROFILE';
+  if (!profiles.value.some((p) => p.strName === base)) return base;
+  for (let i = 2; ; i++) {
+    const name = `${base}_${i}`;
+    if (!profiles.value.some((p) => p.strName === name)) return name;
+  }
+}
+
+/** 载入档案到编辑器；同时把下拉选择同步过去（selectedName 为空表示正在新建） */
 function loadForEdit(name: string | null) {
+  sourceName.value = name;
   if (name === null) {
-    editing.value = newProfile('NEW_PROFILE');
+    editing.value = newProfile(nextNewName());
+    selectedName.value = '';
   } else {
     const src = profiles.value.find((p) => p.strName === name);
     if (!src) return;
     editing.value = JSON.parse(JSON.stringify({ ...src, arrPolicy: src.arrPolicy.map(normalizePolicy) })) as FanProfile;
+    selectedName.value = name;
   }
   dirty.value = false;
+  drawCurve();
 }
 
 function markDirty() {
@@ -77,11 +93,11 @@ function drawCurve() {
   const pol = editing.value?.arrPolicy[0];
   if (!pol || !chart) return;
   const points = pol.arrRef.map((r, i) => [r, pol.arrDuty[i]]);
-  const runs = profiles.value.find((p) => p.strName === selectedName.value);
-  const runPol = runs?.arrPolicy[0];
+  const runPol = profiles.value.find((p) => p.strName === mode.value)?.arrPolicy[0];
+  const isEditingRunning = editing.value?.strName === mode.value;
   const series: echarts.SeriesOption[] = [
     {
-      name: '编辑中',
+      name: isEditingRunning ? '当前运行' : '编辑中',
       type: 'line',
       step: 'end',
       data: points,
@@ -90,9 +106,9 @@ function drawCurve() {
       symbolSize: 8,
     },
   ];
-  if (runPol && editing.value && runPol !== pol) {
+  if (runPol && !isEditingRunning) {
     series.push({
-      name: '当前生效',
+      name: `当前运行（${mode.value}）`,
       type: 'line',
       step: 'end',
       data: runPol.arrRef.map((r, i) => [r, runPol.arrDuty[i]]),
@@ -150,7 +166,7 @@ function removePoint(i: number) {
 }
 
 // ---------- 数据加载 ----------
-async function refresh(keepSelection = true) {
+async function refresh() {
   try {
     const [profilesData, modeData, sensorsData] = await Promise.all([
       bmcGet<FanProfile[]>('settings/fanprofile/collection'),
@@ -167,9 +183,12 @@ async function refresh(keepSelection = true) {
     mode.value = modeData.strMode;
     sensors.value = sensorsData;
     pcieDevices.value = devices;
-    if (!keepSelection || !selectedName.value) selectedName.value = modeData.strMode || profilesData[0]?.strName || '';
-    if (!editing.value) loadForEdit(selectedName.value);
-    drawCurve();
+    if (!editing.value) {
+      // 首次进入：载入当前运行档案；没有则取第一个
+      loadForEdit(modeData.strMode || profilesData[0]?.strName || null);
+    } else {
+      drawCurve();
+    }
     loading.value = false;
   } catch {
     loading.value = false;
@@ -177,17 +196,15 @@ async function refresh(keepSelection = true) {
 }
 
 // ---------- 写操作 ----------
-const showNewModal = ref(false);
-const newName = ref('');
-
 async function saveProfile() {
   if (!editing.value) return;
   const pol = editing.value.arrPolicy[0];
   if (pol.arrSensor.length === 0) return message.error('请至少选择一个源传感器');
   if (pol.arrFanSensor.length === 0) return message.error('请至少选择一个被控风扇');
+  const savedName = editing.value.strName;
   const pairs = pol.arrRef.map((r, i) => `${r}→${pol.arrDuty[i]}%`).join('  ');
   dialog.warning({
-    title: `保存设定档「${editing.value.strName}」`,
+    title: `保存设定档「${savedName}」`,
     content: `曲线：${pairs}`,
     positiveText: '写入 BMC',
     negativeText: '取消',
@@ -195,8 +212,14 @@ async function saveProfile() {
       try {
         await bmcSend('POST', 'settings/fanprofile/collection', editing.value);
         message.success('已写入');
-        editing.value = null;
         await refresh();
+        // 从服务端重新载入，保证编辑器与已保存内容一致
+        if (profiles.value.some((p) => p.strName === savedName)) {
+          loadForEdit(savedName);
+        } else {
+          selectedName.value = savedName;
+          dirty.value = false;
+        }
       } catch (e) {
         message.error((e as Error).message);
       }
@@ -244,7 +267,8 @@ async function deleteProfile(name: string) {
   try {
     await bmcSend('DELETE', `settings/fanprofile/collection/${encodeURIComponent(name)}`);
     message.success(`已删除：${name}`);
-    await refresh(false);
+    await refresh();
+    loadForEdit(mode.value || profiles.value[0]?.strName || null);
   } catch (e) {
     message.error((e as Error).message);
   }
@@ -281,24 +305,19 @@ function onImport({ file }: { file: UploadFileInfo }) {
 }
 
 function onTabSelect(name: string) {
+  if (name === selectedName.value) return;
   if (dirty.value) {
     dialog.warning({
       title: '有未保存的修改',
       content: '切换将丢弃修改，继续？',
       positiveText: '丢弃并切换',
       negativeText: '留在当前',
-      onPositiveClick: () => {
-        loadForEdit(name);
-      },
+      onPositiveClick: () => loadForEdit(name),
     });
   } else {
     loadForEdit(name);
   }
 }
-
-watch(selectedName, (v) => {
-  if (!editing.value) loadForEdit(v);
-});
 
 onMounted(() => {
   chart = echarts.init(chartEl.value!);
@@ -326,14 +345,15 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         <template #header-extra>
           <n-space>
             <n-select
-              :value="selectedName"
+              :value="selectedName || null"
               :options="profileOptions"
+              placeholder="选择设定档"
               style="width: 220px"
               size="small"
               @update:value="onTabSelect"
             />
-            <n-button size="small" @click="loadForEdit(null); showNewModal = false">新建</n-button>
-            <n-button size="small" :disabled="isRunning" @click="playProfile(selectedName)">应用</n-button>
+            <n-button size="small" @click="loadForEdit(null)">新建</n-button>
+            <n-button size="small" :disabled="isRunning || !selectedName" @click="playProfile(selectedName)">应用</n-button>
             <n-button size="small" :disabled="mode === 'default'" @click="stopProfile">停止</n-button>
             <n-popconfirm v-if="current" @positive-click="deleteProfile(selectedName)">
               <template #trigger>
@@ -435,7 +455,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 
             <n-space>
               <n-button type="primary" :disabled="!dirty" @click="saveProfile">保存到 BMC</n-button>
-              <n-button :disabled="!dirty" @click="loadForEdit(editing.strName === 'NEW_PROFILE' ? null : selectedName)">还原</n-button>
+              <n-button :disabled="!dirty" @click="loadForEdit(sourceName)">还原</n-button>
               <n-button @click="exportProfile">导出 JSON</n-button>
               <n-upload :show-file-list="false" :max="1" @change="onImport">
                 <n-button size="small">导入 JSON</n-button>
@@ -453,27 +473,6 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         </n-space>
       </n-card>
     </n-space>
-
-    <n-modal v-model:show="showNewModal" preset="dialog" title="新建设定档">
-      <n-form @submit.prevent>
-        <n-form-item label="名称">
-          <n-input v-model:value="newName" placeholder="NEW_PROFILE" />
-        </n-form-item>
-      </n-form>
-      <template #action>
-        <n-button @click="showNewModal = false">取消</n-button>
-        <n-button
-          type="primary"
-          @click="
-            editing && (editing.strName = newName || 'NEW_PROFILE'),
-            (showNewModal = false),
-            markDirty()
-          "
-        >
-          创建
-        </n-button>
-      </template>
-    </n-modal>
   </n-spin>
 </template>
 
