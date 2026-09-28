@@ -71,7 +71,7 @@ const userColumns: DataTableColumns<BmcUser> = [
   },
   { title: 'KVM', key: 'kvm', width: 80, render: (u) => (u.kvm ? '✓' : '—') },
   { title: '虚拟媒体', key: 'vmedia', width: 90, render: (u) => (u.vmedia ? '✓' : '—') },
-  { title: 'SSH 公钥', key: 'ssh_key', render: (u) => (u.ssh_key === 'Not Available' ? '—' : u.ssh_key) },
+  { title: 'SSH 公钥', key: 'ssh_key', ellipsis: { tooltip: true }, render: (u) => (u.ssh_key === 'Not Available' ? '—' : u.ssh_key) },
 ];
 
 function h_tag(text: string, type: 'success' | 'default' | 'info') {
@@ -163,7 +163,29 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="network" tab="网络">
-          <n-data-table :columns="netColumns" :data="network" size="small" :bordered="false" :scroll-x="isMobile ? 800 : undefined" />
+          <!-- 窄屏：表格列多且 IPv6 是长字符串，改用逐项列表避免被挤压 -->
+          <template v-if="isMobile">
+            <n-descriptions
+              v-for="n in network"
+              :key="n.id"
+              :title="n.interface_name"
+              bordered
+              :column="1"
+              size="small"
+              style="margin-bottom: 12px"
+            >
+              <n-descriptions-item label="MAC">{{ n.mac_address }}</n-descriptions-item>
+              <n-descriptions-item label="IPv4">
+                {{ n.ipv4_address }}<template v-if="n.ipv4_subnet"> / {{ n.ipv4_subnet }}</template>
+              </n-descriptions-item>
+              <n-descriptions-item label="地址获取">{{ n.ipv4_dhcp_enable ? 'DHCP' : '静态' }}</n-descriptions-item>
+              <n-descriptions-item label="网关">{{ n.ipv4_gateway || '—' }}</n-descriptions-item>
+              <n-descriptions-item label="IPv6">
+                <span style="word-break: break-all">{{ n.ipv6_address || '—' }}</span>
+              </n-descriptions-item>
+            </n-descriptions>
+          </template>
+          <n-data-table v-else :columns="netColumns" :data="network" size="small" :bordered="false" />
         </n-tab-pane>
 
         <n-tab-pane name="datetime" :tab="isMobile ? '时间' : '日期时间'">
