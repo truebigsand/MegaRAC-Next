@@ -1,0 +1,145 @@
+// BMC 客户端：持有单个 BMC 会话，所有请求串行化。
+// 会话协议见 docs/API.md 第 0 节。
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
+
+const BMC_BASE = process.env.BMC_BASE || 'https://192.168.0.200';
+const REQUEST_TIMEOUT_MS = 15_000;
+
+// BMC 用自签证书，仅对发往 BMC 的请求关闭校验
+const agent = new Agent({ connect: { rejectUnauthorized: false } });
+
+export interface BmcResult {
+  status: number;
+  body: unknown;
+  text: string;
+}
+
+export class BmcSessionExpiredError extends Error {
+  constructor() {
+    super('bmc_session_expired');
+  }
+}
+
+export class BmcClient {
+  readonly username: string;
+  private readonly password: string;
+  private csrf = '';
+  private cookie = '';
+  private racSessionId = 0;
+  loggedIn = false;
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(username: string, password: string) {
+    this.username = username;
+    this.password = password;
+  }
+
+  /** 串行化：同一时刻只有一个请求在飞，保护 BMC 极小的并发会话配额 */
+  private run<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(fn, fn);
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
+  private async rawRequest(
+    method: string,
+    path: string,
+    opts: { json?: unknown; form?: string; contentType?: string } = {},
+  ): Promise<BmcResult> {
+    const headers: Record<string, string> = {};
+    if (this.csrf) headers['x-csrftoken'] = this.csrf;
+    if (this.cookie) headers.cookie = this.cookie;
+    let body: string | undefined;
+    if (opts.form !== undefined) {
+      body = opts.form;
+      headers['content-type'] = opts.contentType ?? 'application/x-www-form-urlencoded';
+    } else if (opts.json !== undefined) {
+      body = JSON.stringify(opts.json);
+      headers['content-type'] = 'application/json';
+    }
+
+    const res = await undiciFetch(BMC_BASE + path, {
+      method,
+      headers,
+      body,
+      dispatcher: agent as unknown as Dispatcher,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    const setCookie = res.headers.getSetCookie?.() ?? [];
+    if (setCookie.length) {
+      this.cookie = setCookie.map((c) => c.split(';')[0]).join('; ');
+    }
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    return { status: res.status, body: parsed, text };
+  }
+
+  async login(): Promise<void> {
+    const form = new URLSearchParams({ username: this.username, password: this.password });
+    const res = await this.rawRequest('POST', '/api/session', { form: form.toString() });
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(res.text) as Record<string, unknown>;
+    } catch {
+      /* 非 JSON（可能返回 HTML）按失败处理 */
+    }
+    if (res.status !== 200 || data.ok !== 0 || typeof data.CSRFToken !== 'string') {
+      const err = new Error(data.error ? String(data.error) : `BMC 登录失败（HTTP ${res.status}）`);
+      throw err;
+    }
+    this.csrf = data.CSRFToken;
+    this.racSessionId = Number(data.racsession_id ?? 0);
+    this.loggedIn = true;
+  }
+
+  async logout(): Promise<void> {
+    if (!this.loggedIn) return;
+    try {
+      await this.rawRequest('DELETE', '/api/session');
+    } catch {
+      /* 注销失败不影响本地清理 */
+    }
+    this.loggedIn = false;
+  }
+
+  private async authorized(method: string, path: string, opts: { json?: unknown } = {}): Promise<BmcResult> {
+    if (!this.loggedIn) throw new BmcSessionExpiredError();
+    let res = await this.rawRequest(method, path, opts);
+    // BMC 会话过期/被挤：静默重登一次再重试
+    if (res.status === 403) {
+      try {
+        await this.login();
+        res = await this.rawRequest(method, path, opts);
+      } catch {
+        this.loggedIn = false;
+        throw new BmcSessionExpiredError();
+      }
+      if (res.status === 403) throw new BmcSessionExpiredError();
+    }
+    return res;
+  }
+
+  /** GET 数据端点（只读） */
+  get(path: string): Promise<BmcResult> {
+    return this.run(() => this.authorized('GET', path));
+  }
+
+  /**
+   * 写操作转发（POST/PUT/DELETE）。
+   * ⚠️ 项目纪律：开发阶段不对真实 BMC 触发写操作——
+   * 这条通道本身已实现，但调用方（前端按钮）上线验证前保持不接通。
+   */
+  send(method: 'POST' | 'PUT' | 'DELETE', path: string, json?: unknown): Promise<BmcResult> {
+    return this.run(() => this.authorized(method, path, { json }));
+  }
+
+  get sessionId(): number {
+    return this.racSessionId;
+  }
+}
