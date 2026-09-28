@@ -136,7 +136,6 @@ function drawCurve() {
     {
       name: isEditingRunning ? '当前运行' : '编辑中',
       type: 'line',
-      step: 'end',
       data: orderedPoints(pol),
       lineStyle: { color: CHART_COLORS.primary, width: 2 },
       itemStyle: { color: CHART_COLORS.primary },
@@ -147,7 +146,6 @@ function drawCurve() {
     series.push({
       name: `当前运行（${mode.value}）`,
       type: 'line',
-      step: 'end',
       data: orderedPoints(runPol),
       lineStyle: { color: CHART_COLORS.reference, type: 'dashed' },
       itemStyle: { color: CHART_COLORS.reference },
@@ -279,8 +277,32 @@ function curveRatio(shape: CurveShape, t: number): number {
   }
 }
 
-const showCurveEditor = ref(false);
-const previewEl = ref<HTMLDivElement>();
+/**
+ * 生成「按参考点线性插值」的求值函数。
+ * 实测固件即线性插值（Slope）：参考点之间按斜率取值，超出两端钳位。
+ */
+function makeInterpolator(pairs: { ref: number; duty: number }[]): (x: number) => number {
+  const seq = [...pairs].sort((a, b) => a.ref - b.ref);
+  return (x: number): number => {
+    if (seq.length === 0) return 0;
+    if (seq.length === 1) return seq[0].duty;
+    const first = seq[0];
+    const last = seq[seq.length - 1];
+    if (x <= first.ref) return first.duty;
+    if (x >= last.ref) return last.duty;
+    for (let i = 0; i < seq.length - 1; i++) {
+      const a = seq[i];
+      const b = seq[i + 1];
+      if (x >= a.ref && x <= b.ref) {
+        const span = b.ref - a.ref;
+        return span === 0 ? a.duty : a.duty + ((b.duty - a.duty) * (x - a.ref)) / span;
+      }
+    }
+    return last.duty;
+  };
+}
+
+const showCurveEditor = ref(false);const previewEl = ref<HTMLDivElement>();
 let previewChart: echarts.ECharts | null = null;
 const curveForm = ref({
   shape: 'standard' as CurveShape,
@@ -350,64 +372,51 @@ function drawPreview() {
   const f = curveForm.value;
   const pol0 = pol.value;
   const dts = pol0 ? isDtsSource(pol0) : false;
-  const steps = 60;
-  const curve: [number, number][] = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    curve.push([f.x0 + (f.x1 - f.x0) * t, f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t)]);
-  }
+  const span = f.x1 - f.x0;
+  const ratioAt = (x: number) => {
+    const t = span === 0 ? 0 : (x - f.x0) / span;
+    return curveRatio(f.shape, dts ? 1 - t : t);
+  };
+
   const s = buildSamples();
-  // 与写入固件一致的顺序（升序；DTS 倒序），绘图与阶梯取值共用
+  // 与写入固件一致的顺序（升序；DTS 倒序）
   const pairs = s.refs.map((ref, i) => ({ ref, duty: s.duties[i] }));
   pairs.sort((a, b) => a.ref - b.ref);
   if (dts) pairs.reverse();
-  const sampled: [number, number][] = pairs.map((p) => [p.ref, p.duty]);
 
-  /** 阶梯在该读数的取值：与 step:'end' 一致，取所在区间的左端点占空比；超出两端则钳位 */
-  const stepAt = (x: number): number | null => {
-    if (pairs.length === 0) return null;
-    if (pairs.length === 1) return pairs[0].duty;
-    for (let i = 0; i < pairs.length - 1; i++) {
-      const a = pairs[i].ref;
-      const b = pairs[i + 1].ref;
-      if (x >= Math.min(a, b) && x <= Math.max(a, b)) return pairs[i].duty;
-    }
-    const first = pairs[0];
-    const last = pairs[pairs.length - 1];
-    if (first.ref < last.ref) return x < first.ref ? first.duty : last.duty;
-    return x > first.ref ? first.duty : last.duty;
-  };
+  /**
+   * 取样点之间的取值按斜率线性插值（实测固件即如此：参考点之间线性插值，超出两端钳位）。
+   * 读数与占空比都取整（固件的参考点/占空比本就是整数），两条系列共用同一组整数读数网格，
+   * 铺满整段区间 —— 这样默认 tooltip 在任意位置都能同时命中两条系列，无需自定义 formatter。
+   */
+  const interpAt = makeInterpolator(pairs);
+  const grid = 60;
+  const xs = [
+    ...new Set(
+      Array.from({ length: grid + 1 }, (_, i) => Math.round(f.x0 + (span * i) / grid)).concat(pairs.map((p) => p.ref)),
+    ),
+  ].sort((a, b) => a - b);
 
-  /** tooltip：无论悬停位置是否落在取样点上，都同时给出目标曲线与取样阶梯的值 */
-  const tipFormatter = (params: unknown): string => {
-    const list = Array.isArray(params) ? (params as { value?: [number, number] }[]) : [params as { value?: [number, number] }];
-    const x = Number(list[0]?.value?.[0]);
-    if (!Number.isFinite(x)) return '';
-    const span = f.x1 - f.x0;
-    const t = span === 0 ? 0 : (x - f.x0) / span;
-    const target = f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t);
-    const step = stepAt(x);
-    // 保留各系列的颜色标记（自定义 formatter 不会自带）
-    const dot = (color: string) =>
-      `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span>`;
-    return [
-      `${dts ? '温度余量' : '读数'} ${Math.round(x)}`,
-      `${dot(CHART_COLORS.primary)}目标曲线：${Math.round(target)}%`,
-      `${dot(CHART_COLORS.sampled)}取样阶梯：${step === null ? '—' : `${step}%`}`,
-    ].join('<br/>');
-  };
+  const targetData: [number, number][] = xs.map((x) => [x, Math.round(f.y0 + (f.y1 - f.y0) * ratioAt(x))]);
+  const sampleSet = new Set(pairs.map((p) => p.ref));
+  const actualData = xs.map((x) => ({
+    value: [x, Math.round(interpAt(x))] as [number, number],
+    // 只有真正的取样点显示标记，其余铺密点仅用于 tooltip 覆盖
+    symbol: sampleSet.has(x) ? 'circle' : 'none',
+    symbolSize: sampleSet.has(x) ? 7 : 0,
+  }));
 
   previewChart.setOption(
     {
       animation: false,
       grid: { left: 46, right: 16, top: 26, bottom: 30 },
       legend: { top: 0, textStyle: { color: CHART_COLORS.legendTextCompact, fontSize: 10 }, itemWidth: 12, itemHeight: 8 },
-      tooltip: { trigger: 'axis', formatter: tipFormatter },
-      xAxis: { type: 'value', name: dts ? '温度余量' : '传感器读数', nameTextStyle: { color: CHART_COLORS.axisText, fontSize: 10 }, axisLabel: { color: CHART_COLORS.axisText, fontSize: 10 }, inverse: dts },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'line', snap: true } },
+      xAxis: { type: 'value', name: dts ? '温度余量' : '传感器读数', nameTextStyle: { color: CHART_COLORS.axisText, fontSize: 10 }, axisLabel: { color: CHART_COLORS.axisText, fontSize: 10, formatter: (v: number) => String(Math.round(v)) }, inverse: dts },
       yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: CHART_COLORS.axisText, fontSize: 10 }, axisLabel: { color: CHART_COLORS.axisText, fontSize: 10 } },
       series: [
-        { name: '目标曲线', type: 'line', showSymbol: false, smooth: false, data: curve, lineStyle: { color: CHART_COLORS.primary, width: 2 }, itemStyle: { color: CHART_COLORS.primary } },
-        { name: '取样点', type: 'line', step: 'end', data: sampled, lineStyle: { color: CHART_COLORS.sampled, width: 1, type: 'dashed' }, itemStyle: { color: CHART_COLORS.sampled }, symbolSize: 7 },
+        { name: '目标曲线', type: 'line', showSymbol: false, smooth: false, data: targetData, lineStyle: { color: CHART_COLORS.primary, width: 2 }, itemStyle: { color: CHART_COLORS.primary } },
+        { name: '实际取值', type: 'line', data: actualData, lineStyle: { color: CHART_COLORS.sampled, width: 1, type: 'dashed' }, itemStyle: { color: CHART_COLORS.sampled } },
       ],
     },
     { notMerge: true },
@@ -1004,7 +1013,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         <div ref="previewEl" style="height: 220px" />
 
         <p class="dim" style="margin: 0">
-          绿色为目标曲线，橙色虚线是按取样点还原的阶梯。<b>应用</b>后填充到「数据点」列表，确认无误再点「保存到 BMC」写入。
+          绿色为目标曲线，橙色虚线是按取样点线性插值还原的取值曲线（与固件 Slope 行为一致）。<b>应用</b>后填充到「数据点」列表，确认无误再点「保存到 BMC」写入。
           <template v-if="pol && isDtsSource(pol)">源传感器为 DTS（温度余量），曲线方向已按「越热越快」自动映射。</template>
         </p>
       </n-space>
