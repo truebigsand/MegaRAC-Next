@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
   NCard, NAlert, NSelect, NSpace, NSpin, NTag, NButton, NInputNumber,
   NInput, NCheckbox, NPopconfirm, NUpload, useDialog, useMessage,
@@ -280,9 +280,18 @@ async function saveProfile() {
   if (pol.arrFanSensor.length === 0) return message.error('请至少选择一个被控风扇');
   const savedName = editing.value.strName;
   const pairs = pol.arrRef.map((r, i) => `${r}→${pol.arrDuty[i]}%`).join('  ');
+  const running = savedName === mode.value;
   dialog.warning({
     title: `保存设定档「${savedName}」`,
-    content: `曲线：${pairs}`,
+    content: () =>
+      h('div', [
+        h('div', `曲线：${pairs}`),
+        h(
+          'div',
+          { style: 'color:#999;margin-top:6px' },
+          running ? '该档案正在运行，写入后立即更新其配置' : `不会切换运行中的档案（当前为 ${mode.value || '—'}）`,
+        ),
+      ]),
     positiveText: '写入 BMC',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -309,9 +318,12 @@ async function saveProfile() {
 }
 
 async function playProfile(name: string) {
+  const alreadyRunning = mode.value === name;
   dialog.warning({
-    title: `应用设定档「${name}」？`,
-    content: '风扇转速将立即按该曲线调整',
+    title: alreadyRunning ? `重新应用设定档「${name}」？` : `应用设定档「${name}」？`,
+    content: alreadyRunning
+      ? '该档案已在运行，将重新下发使其读取最新配置'
+      : '风扇转速将立即按该曲线调整',
     positiveText: '应用',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -324,6 +336,53 @@ async function playProfile(name: string) {
       }
     },
   });
+}
+
+// ---------- 另存为（保存为新档案，不切换运行档案） ----------
+const showSaveAs = ref(false);
+const saveAsName = ref('');
+
+function openSaveAs() {
+  if (!editing.value) return;
+  saveAsName.value = profiles.value.some((p) => p.strName === `${editing.value!.strName}_copy`)
+    ? ''
+    : `${editing.value.strName}_copy`;
+  showSaveAs.value = true;
+}
+
+async function doSaveAs(): Promise<boolean> {
+  const name = saveAsName.value.trim();
+  if (!name) {
+    message.warning('请输入档案名称');
+    return false; // 保持弹窗打开
+  }
+  if (profiles.value.some((p) => p.strName === name)) {
+    message.warning(`档案「${name}」已存在，请更换名称`);
+    return false;
+  }
+  const pol = editing.value!.arrPolicy[0];
+  if (pol.arrSensor.length === 0) {
+    message.error('请至少选择一个源传感器');
+    return false;
+  }
+  if (pol.arrFanSensor.length === 0) {
+    message.error('请至少选择一个被控风扇');
+    return false;
+  }
+  try {
+    const payload = JSON.parse(JSON.stringify(editing.value)) as FanProfile;
+    payload.strName = name;
+    normalizeOrder(payload.arrPolicy[0]);
+    normalizeConditions(payload.arrPolicy[0]);
+    await bmcSend('POST', 'settings/fanprofile/collection', payload);
+    message.success(`已另存为「${name}」，运行中的档案未改变`);
+    await refresh();
+    loadForEdit(name);
+    return true;
+  } catch (e) {
+    message.error((e as Error).message);
+    return false;
+  }
 }
 
 async function stopProfile() {
@@ -434,7 +493,9 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               @update:value="onTabSelect"
             />
             <n-button size="small" @click="loadForEdit(null)">新建</n-button>
-            <n-button size="small" :disabled="isRunning || !selectedName" @click="playProfile(selectedName)">应用</n-button>
+            <n-button size="small" :disabled="!selectedName" @click="playProfile(selectedName)">
+              {{ isRunning ? '重新应用' : '应用' }}
+            </n-button>
             <n-button size="small" :disabled="mode === 'default'" @click="stopProfile">停止</n-button>
             <n-popconfirm v-if="current" @positive-click="deleteProfile(selectedName)">
               <template #trigger>
@@ -562,6 +623,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               <n-button type="primary" :disabled="!dirty" @click="saveProfile">
                 {{ sourceName === null ? '创建并保存' : '保存到 BMC' }}
               </n-button>
+              <n-button :disabled="!editing" @click="openSaveAs">另存为…</n-button>
               <n-button :disabled="!dirty" @click="revert">还原</n-button>
               <n-button @click="exportProfile">导出 JSON</n-button>
               <n-upload :show-file-list="false" :max="1" @change="onImport">
@@ -580,6 +642,20 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         </n-space>
       </n-card>
     </n-space>
+
+    <n-modal
+      v-model:show="showSaveAs"
+      preset="dialog"
+      title="另存为新档案"
+      positive-text="保存为新档案"
+      negative-text="取消"
+      @positive-click="doSaveAs"
+    >
+      <n-space vertical size="small">
+        <span style="color: #888; font-size: 12px">以当前编辑器内容创建一个新档案；原档案与运行中的档案都不受影响。</span>
+        <n-input v-model:value="saveAsName" placeholder="新档案名称" @keyup.enter="doSaveAs" />
+      </n-space>
+    </n-modal>
   </n-spin>
 </template>
 
