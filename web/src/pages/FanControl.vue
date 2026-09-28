@@ -356,13 +356,49 @@ function drawPreview() {
     curve.push([f.x0 + (f.x1 - f.x0) * t, f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t)]);
   }
   const s = buildSamples();
-  const sampled: [number, number][] = s.refs.map((r, i) => [r, s.duties[i]]);
+  // 与写入固件一致的顺序（升序；DTS 倒序），绘图与阶梯取值共用
+  const pairs = s.refs.map((ref, i) => ({ ref, duty: s.duties[i] }));
+  pairs.sort((a, b) => a.ref - b.ref);
+  if (dts) pairs.reverse();
+  const sampled: [number, number][] = pairs.map((p) => [p.ref, p.duty]);
+
+  /** 阶梯在该读数的取值：与 step:'end' 一致，取所在区间的左端点占空比；超出两端则钳位 */
+  const stepAt = (x: number): number | null => {
+    if (pairs.length === 0) return null;
+    if (pairs.length === 1) return pairs[0].duty;
+    for (let i = 0; i < pairs.length - 1; i++) {
+      const a = pairs[i].ref;
+      const b = pairs[i + 1].ref;
+      if (x >= Math.min(a, b) && x <= Math.max(a, b)) return pairs[i].duty;
+    }
+    const first = pairs[0];
+    const last = pairs[pairs.length - 1];
+    if (first.ref < last.ref) return x < first.ref ? first.duty : last.duty;
+    return x > first.ref ? first.duty : last.duty;
+  };
+
+  /** tooltip：无论悬停位置是否落在取样点上，都同时给出目标曲线与取样阶梯的值 */
+  const tipFormatter = (params: unknown): string => {
+    const list = Array.isArray(params) ? (params as { value?: [number, number] }[]) : [params as { value?: [number, number] }];
+    const x = Number(list[0]?.value?.[0]);
+    if (!Number.isFinite(x)) return '';
+    const span = f.x1 - f.x0;
+    const t = span === 0 ? 0 : (x - f.x0) / span;
+    const target = f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t);
+    const step = stepAt(x);
+    return [
+      `${dts ? '温度余量' : '读数'} ${Math.round(x)}`,
+      `目标曲线：${Math.round(target)}%`,
+      `取样阶梯：${step === null ? '—' : `${step}%`}`,
+    ].join('<br/>');
+  };
+
   previewChart.setOption(
     {
       animation: false,
       grid: { left: 46, right: 16, top: 26, bottom: 30 },
       legend: { top: 0, textStyle: { color: '#bbb', fontSize: 10 }, itemWidth: 12, itemHeight: 8 },
-      tooltip: { trigger: 'axis' },
+      tooltip: { trigger: 'axis', formatter: tipFormatter },
       xAxis: { type: 'value', name: dts ? '温度余量' : '传感器读数', nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 }, inverse: dts },
       yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 } },
       series: [
