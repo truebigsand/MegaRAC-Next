@@ -3,7 +3,10 @@
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 
 const BMC_BASE = process.env.BMC_BASE || 'https://192.168.0.200';
-const REQUEST_TIMEOUT_MS = 15_000;
+// 该 BMC 正常响应 2~3 秒，偶发长尾会超过 15 秒，故放宽并配合重试
+const REQUEST_TIMEOUT_MS = Number(process.env.BMC_TIMEOUT_MS || 30_000);
+/** 瞬时故障（超时/连接被中断）时 GET 的重试次数；写操作不重试，避免重复提交 */
+const GET_ATTEMPTS = 3;
 
 // BMC 用自签证书，仅对发往 BMC 的请求关闭校验
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
@@ -58,26 +61,36 @@ export class BmcClient {
       headers['content-type'] = 'application/json';
     }
 
-    const res = await undiciFetch(BMC_BASE + path, {
-      method,
-      headers,
-      body,
-      dispatcher: agent as unknown as Dispatcher,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    const setCookie = res.headers.getSetCookie?.() ?? [];
-    if (setCookie.length) {
-      this.cookie = setCookie.map((c) => c.split(';')[0]).join('; ');
+    const attempts = method === 'GET' ? GET_ATTEMPTS : 1;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const res = await undiciFetch(BMC_BASE + path, {
+          method,
+          headers,
+          body,
+          dispatcher: agent as unknown as Dispatcher,
+          redirect: 'manual',
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        const text = await res.text();
+        const setCookie = res.headers.getSetCookie?.() ?? [];
+        if (setCookie.length) {
+          this.cookie = setCookie.map((c) => c.split(';')[0]).join('; ');
+        }
+        let parsed: unknown = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = null;
+        }
+        return { status: res.status, body: parsed, text };
+      } catch (e) {
+        lastErr = e;
+        if (attempt < attempts) await new Promise((r) => setTimeout(r, 700 * attempt));
+      }
     }
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = null;
-    }
-    return { status: res.status, body: parsed, text };
+    throw lastErr;
   }
 
   async login(): Promise<void> {
