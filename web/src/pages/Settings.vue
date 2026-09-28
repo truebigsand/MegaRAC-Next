@@ -174,12 +174,11 @@ onBeforeUnmount(() => {
             <n-descriptions-item label="主 NTP">{{ datetime?.primary_ntp ?? '—' }}</n-descriptions-item>
             <n-descriptions-item label="备 NTP">{{ datetime?.secondary_ntp ?? '—' }}</n-descriptions-item>
           </n-descriptions>
-          <p class="tip">⚠️ BMC 时钟停在 2024-01-01（NTP 未启用）；SEL 时间戳与真实时间存在偏差。</p>
+          <p class="tip">BMC 未启用 NTP，时钟可能不准，日志时间戳会随之偏移。</p>
         </n-tab-pane>
 
         <n-tab-pane name="services" tab="服务">
           <n-data-table :columns="serviceColumns" :data="services" size="small" :bordered="false" />
-          <p class="tip">会话"当前"数长期接近上限（BMC 会话表泄漏现象），是本代理坚持单会话复用的原因。</p>
         </n-tab-pane>
       </n-tabs>
     </n-card>

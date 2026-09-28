@@ -56,9 +56,6 @@ onMounted(async () => {
         </n-form-item>
         <n-button type="primary" block :loading="loading" attr-type="submit">登录</n-button>
       </n-form>
-      <template #footer>
-        <span style="color: #666; font-size: 12px">凭证直接透传给 BMC（192.168.0.200），代理不落盘保存</span>
-      </template>
     </n-card>
   </div>
 </template>

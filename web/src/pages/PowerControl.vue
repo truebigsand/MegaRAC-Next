@@ -29,7 +29,7 @@ async function refresh() {
 function confirmAndSend(action: (typeof ACTIONS)[number]) {
   const d = dialog.warning({
     title: `确认执行「${action.label}」？`,
-    content: action.tip + '（对真实硬件生效）',
+    content: action.tip,
     positiveText: '执行',
     negativeText: '取消',
     onPositiveClick: async () => {

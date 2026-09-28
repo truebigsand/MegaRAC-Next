@@ -246,7 +246,7 @@ async function deleteProfile(name: string) {
     message.success(`已删除：${name}`);
     await refresh(false);
   } catch (e) {
-    message.error((e as Error).message + '（删除端点为推断路径，如失败需对照原版 UI 抓包修正）');
+    message.error((e as Error).message);
   }
 }
 
@@ -385,10 +385,6 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
                 <n-button size="tiny" @click="addPoint">+ 加点</n-button>
               </n-space>
-              <p class="hint">
-                源传感器为 DTS 时，Reference 是「距临界温度的余量」（CPU0_TEMP + CPU0_DTS = 100，实测恒成立）：
-                余量越小 = CPU 越热 → Duty 越高。原版 UI 因此把横轴画成反向（左冷右热）。
-              </p>
               <n-space vertical size="small">
                 <n-space v-for="(_, i) in pol.arrRef" :key="i" align="center" :size="8">
                   <span class="pt">点 {{ i }}</span>
@@ -485,11 +481,6 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 .lbl {
   color: #999;
   font-size: 12px;
-}
-.hint {
-  color: #8a8a8a;
-  font-size: 12px;
-  margin: 4px 0 10px;
 }
 .pt {
   color: #777;

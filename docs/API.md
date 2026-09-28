@@ -251,3 +251,12 @@ Bundle 中 `models/chassis_status`：
 - KVM 独立窗口 `/viewer.html` → `/viewer.min.js`（1.6MB）
 - 服务器 `lighttpd`，强制 HTTPS（80 → 307 → 443），CSP/安全头齐全
 - 原版前端为 Backbone + jQuery + i18next（含简体中文语言包），路由为 hash 路由
+
+---
+
+## 附：KVM 自研参考（从 UI 移至文档归档）
+
+- 现成实现调研：未找到可直接复用的开源 SP-X KVM 库；最接近的参考是 [MagnaCapax/mcxBMCView](https://github.com/MagnaCapax/mcxBMCView)（AMI MegaRAC HTML5 KVM 截屏逆向实践）
+- 协议研究背景：[Nozomi Networks — MegaRAC SP-X 协议研究](https://www.nozominetworks.com/blog/vulnerabilities-in-bmc-firmware-affect-ot-iot-device-security-part-2)
+- 视频解码：原版 `viewer.min.js` 通过 Web Worker `./libs/kvm/ast/decode_worker.js` 解码；帧头含 `CompressionMode / JPEGScaleFactor / JPEGTableSelector / VQMode / RC4Enable`，编码器侧有 JPEG 结构（DHT/DQT、maxJPEGSize），`VIDEO_PACKET_SIZE=373`、`HDR_SIZE=8`
+- 自研路线：Node 侧 ws 客户端连 wss/kvm → 复刻 createHeader 帧协议（`CMD_CONNECTION_COMPLETE_PKT` 74 字节会话信息 + `CMD_VALIDATE_VIDEO_SESSION` 校验）→ 逐帧取 `CMD_VIDEO_PACKETS` 载荷 → Canvas 渲染；键鼠用 `CMD_SEND_HID_PACKET`

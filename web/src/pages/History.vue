@@ -88,10 +88,10 @@ onBeforeUnmount(() => {
 
 <template>
   <n-spin :show="loading">
-    <n-card title="传感器历史趋势（落盘 SQLite，保留 30 天）">
+    <n-card title="传感器历史趋势（保留最近 30 天）">
       <n-space vertical size="large">
         <n-alert v-if="available.length === 0 && !loading" type="info" :bordered="false">
-          暂无历史数据：采样器依赖已登录的 BMC 会话（凭证不落盘）。保持本页/仪表板登录约 30 秒后开始积累。
+          暂无历史数据，登录后约 30 秒开始积累。
         </n-alert>
         <n-space align="center">
           <n-select
