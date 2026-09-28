@@ -7,7 +7,6 @@ import {
 import type { UploadFileInfo } from 'naive-ui';
 import * as echarts from 'echarts';
 import { bmcGet, bmcSend } from '../api';
-import { WRITE_OPS_ENABLED } from '../config';
 import type { FanProfile, FanPolicy, Sensor } from '../types';
 
 const message = useMessage();
@@ -102,12 +101,24 @@ function drawCurve() {
       symbolSize: 4,
     });
   }
+  // AMD DTS 传感器读的是"距临界温度的余量"（Tcrit − 实际温度），越小越热。
+  // 与原版一致：DTS 源时横轴反向（左冷右热），曲线才能读成"越热→越快"。
+  const srcSensor = sensors.value.find((s) => pol.arrSensor.includes(s.sensor_number));
+  const isDts = !!srcSensor && srcSensor.name.includes('DTS');
   chart.setOption({
     animation: false,
     tooltip: { trigger: 'axis' },
     legend: { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
     grid: { left: 50, right: 20, top: 36, bottom: 40 },
-    xAxis: { type: 'value', name: 'Reference', nameTextStyle: { color: '#888' }, axisLabel: { color: '#888' } },
+    xAxis: {
+      type: 'value',
+      inverse: isDts,
+      name: isDts ? '温度余量（小=热）' : '传感器读值',
+      nameLocation: 'middle',
+      nameGap: 28,
+      nameTextStyle: { color: '#888' },
+      axisLabel: { color: '#888' },
+    },
     yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: '#888' }, axisLabel: { color: '#888' } },
     series,
   }, { notMerge: true });
@@ -165,27 +176,19 @@ async function refresh(keepSelection = true) {
   }
 }
 
-// ---------- 写操作（全部 gated by WRITE_OPS_ENABLED） ----------
+// ---------- 写操作 ----------
 const showNewModal = ref(false);
 const newName = ref('');
 
-function requireWrite(): boolean {
-  if (!WRITE_OPS_ENABLED) {
-    message.warning('写操作已禁用（开发纪律）。验证通过后在 web/src/config.ts 打开 WRITE_OPS_ENABLED。');
-    return false;
-  }
-  return true;
-}
-
 async function saveProfile() {
-  if (!requireWrite() || !editing.value) return;
+  if (!editing.value) return;
   const pol = editing.value.arrPolicy[0];
   if (pol.arrSensor.length === 0) return message.error('请至少选择一个源传感器');
   if (pol.arrFanSensor.length === 0) return message.error('请至少选择一个被控风扇');
   const pairs = pol.arrRef.map((r, i) => `${r}→${pol.arrDuty[i]}%`).join('  ');
   dialog.warning({
     title: `保存设定档「${editing.value.strName}」`,
-    content: `POST /api/settings/fanprofile/collection\n曲线：${pairs}`,
+    content: `曲线：${pairs}`,
     positiveText: '写入 BMC',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -202,10 +205,9 @@ async function saveProfile() {
 }
 
 async function playProfile(name: string) {
-  if (!requireWrite()) return;
   dialog.warning({
     title: `应用设定档「${name}」？`,
-    content: 'POST /api/settings/fanprofile/mode — 风扇转速将立即按该曲线调整',
+    content: '风扇转速将立即按该曲线调整',
     positiveText: '应用',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -221,10 +223,9 @@ async function playProfile(name: string) {
 }
 
 async function stopProfile() {
-  if (!requireWrite()) return;
   dialog.warning({
     title: '停止当前设定档？',
-    content: '将 strMode 恢复为 default（回归默认曲线）',
+    content: '将恢复为 default（默认曲线）',
     positiveText: '停止',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -240,7 +241,6 @@ async function stopProfile() {
 }
 
 async function deleteProfile(name: string) {
-  if (!requireWrite()) return;
   try {
     await bmcSend('DELETE', `settings/fanprofile/collection/${encodeURIComponent(name)}`);
     message.success(`已删除：${name}`);
@@ -320,9 +320,6 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
     <n-space vertical size="large">
       <n-alert type="info" :bordered="false">
         当前生效设定档：<n-tag type="success" size="small">{{ mode || '—' }}</n-tag>
-        <template v-if="!WRITE_OPS_ENABLED">
-          · <b>写入/应用/删除已禁用</b>（开发纪律：写通道按协议实现，验证后在 config.ts 开启）
-        </template>
       </n-alert>
 
       <n-card title="风扇设定档">
@@ -388,6 +385,10 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
                 <n-button size="tiny" @click="addPoint">+ 加点</n-button>
               </n-space>
+              <p class="hint">
+                源传感器为 DTS 时，Reference 是「距临界温度的余量」（CPU0_TEMP + CPU0_DTS = 100，实测恒成立）：
+                余量越小 = CPU 越热 → Duty 越高。原版 UI 因此把横轴画成反向（左冷右热）。
+              </p>
               <n-space vertical size="small">
                 <n-space v-for="(_, i) in pol.arrRef" :key="i" align="center" :size="8">
                   <span class="pt">点 {{ i }}</span>
@@ -484,6 +485,11 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 .lbl {
   color: #999;
   font-size: 12px;
+}
+.hint {
+  color: #8a8a8a;
+  font-size: 12px;
+  margin: 4px 0 10px;
 }
 .pt {
   color: #777;

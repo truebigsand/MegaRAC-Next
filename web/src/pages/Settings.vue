@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { h, onBeforeUnmount, onMounted, ref } from 'vue';
-import { NTabs, NTabPane, NDataTable, NDescriptions, NDescriptionsItem, NAlert, NTag } from 'naive-ui';
+import { NTabs, NTabPane, NDataTable, NDescriptions, NDescriptionsItem, NTag } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { bmcGet } from '../api';
-import { WRITE_OPS_ENABLED } from '../config';
 
 interface FruDevice {
   device: { id: number; name: string };
@@ -135,11 +134,6 @@ onBeforeUnmount(() => {
 
 <template>
   <n-space vertical size="large">
-    <n-alert v-if="!WRITE_OPS_ENABLED" type="warning" :bordered="false">
-      设置页当前为<b>只读展示</b>；各设置项的写协议已在 docs/API.md 逆向归档，
-      修改功能在写操作对照验证后随 WRITE_OPS_ENABLED 一并开放。
-    </n-alert>
-
     <n-card title="设置" size="small">
       <n-tabs type="line" animated>
         <n-tab-pane name="fru" tab="FRU 信息">

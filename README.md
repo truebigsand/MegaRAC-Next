@@ -29,7 +29,7 @@ npm run dev:server   # Fastify 代理 @ 127.0.0.1:5177
 npm run dev:web      # Vue3 @ http://localhost:5173
 ```
 
-写操作开关：`web/src/config.ts` 的 `WRITE_OPS_ENABLED`（默认 false，按纪律待用户在原版 UI 对照验证后开启）。
+写操作：已全部启用（电源控制/风扇写入均有二次确认弹窗兜底）。
 
 ## 目录
 

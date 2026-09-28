@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { NCard, NButton, NSpace, NAlert, NModal, useDialog, useMessage } from 'naive-ui';
+import { NCard, NButton, NSpace, NAlert, NTag, useDialog, useMessage } from 'naive-ui';
 import { bmcGet, bmcSend } from '../api';
-import { WRITE_OPS_ENABLED } from '../config';
 import type { ChassisStatus } from '../types';
 
 const dialog = useDialog();
@@ -58,11 +57,6 @@ onBeforeUnmount(() => {
 
 <template>
   <n-space vertical size="large">
-    <n-alert v-if="!WRITE_OPS_ENABLED" type="warning" :bordered="false">
-      写操作通道已按协议实现但处于<b>禁用状态</b>（开发纪律：上线前需在原版 UI 对照验证）。
-      验证通过后在 <code>web/src/config.ts</code> 打开 <code>WRITE_OPS_ENABLED</code>。
-    </n-alert>
-
     <n-card title="电源控制">
       <template #header-extra>
         <n-tag :type="powerStatus === 1 ? 'success' : 'error'" size="small">
@@ -75,7 +69,7 @@ onBeforeUnmount(() => {
           :key="a.cmd"
           :type="a.danger ? 'error' : 'primary'"
           :secondary="!a.danger"
-          :disabled="!WRITE_OPS_ENABLED || (a.cmd === 1 && powerStatus === 1)"
+          :disabled="a.cmd === 1 && powerStatus === 1"
           @click="confirmAndSend(a)"
         >
           {{ a.label }}
