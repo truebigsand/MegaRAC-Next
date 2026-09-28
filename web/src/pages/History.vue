@@ -5,6 +5,7 @@ import * as echarts from 'echarts';
 import { localGet } from '../api';
 import { useIsMobile } from '../useMediaQuery';
 import { useChartAutoResize } from '../useChartAutoResize';
+import { CHART_COLORS, PREVIEW_PALETTE } from '../chartTheme';
 
 const isMobile = useIsMobile();
 
@@ -64,19 +65,19 @@ async function refresh() {
           ? {
               type: 'scroll',
               top: 0,
-              textStyle: { color: '#bbb', fontSize: 10 },
+              textStyle: { color: CHART_COLORS.legendTextCompact, fontSize: 10 },
               itemGap: 8,
               itemWidth: 12,
               itemHeight: 8,
               pageIconSize: 10,
-              pageIconColor: '#bbb',
-              pageIconInactiveColor: '#555',
-              pageTextStyle: { color: '#bbb' },
+              pageIconColor: CHART_COLORS.legendTextCompact,
+              pageIconInactiveColor: CHART_COLORS.pageIconInactive,
+              pageTextStyle: { color: CHART_COLORS.legendTextCompact },
             }
-          : { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
+          : { top: 0, textStyle: { color: CHART_COLORS.legendText, fontSize: 11 } },
         grid: { left: isMobile.value ? 48 : 60, right: 20, top: isMobile.value ? 42 : 36, bottom: 40 },
-        xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
-        yAxis: { type: 'value', scale: true, axisLabel: { color: '#888', fontSize: isMobile.value ? 10 : 12 } },
+        xAxis: { type: 'time', axisLabel: { color: CHART_COLORS.axisText, hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
+        yAxis: { type: 'value', scale: true, axisLabel: { color: CHART_COLORS.axisText, fontSize: isMobile.value ? 10 : 12 } },
         series,
       },
       { notMerge: true },

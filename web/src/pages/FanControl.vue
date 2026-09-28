@@ -10,6 +10,7 @@ import { bmcGet, bmcSend } from '../api';
 import type { FanProfile, FanPolicy, Sensor } from '../types';
 import { useIsMobile } from '../useMediaQuery';
 import { useChartAutoResize } from '../useChartAutoResize';
+import { CHART_COLORS, PREVIEW_PALETTE } from '../chartTheme';
 
 const isMobile = useIsMobile();
 
@@ -137,8 +138,8 @@ function drawCurve() {
       type: 'line',
       step: 'end',
       data: orderedPoints(pol),
-      lineStyle: { color: '#63e2b7', width: 2 },
-      itemStyle: { color: '#63e2b7' },
+      lineStyle: { color: CHART_COLORS.primary, width: 2 },
+      itemStyle: { color: CHART_COLORS.primary },
       symbolSize: 8,
     },
   ];
@@ -148,8 +149,8 @@ function drawCurve() {
       type: 'line',
       step: 'end',
       data: orderedPoints(runPol),
-      lineStyle: { color: '#888', type: 'dashed' },
-      itemStyle: { color: '#888' },
+      lineStyle: { color: CHART_COLORS.reference, type: 'dashed' },
+      itemStyle: { color: CHART_COLORS.reference },
       symbolSize: 4,
     });
   }
@@ -159,7 +160,7 @@ function drawCurve() {
   chart.setOption({
     animation: false,
     tooltip: { trigger: 'axis' },
-    legend: { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
+    legend: { top: 0, textStyle: { color: CHART_COLORS.legendText, fontSize: 11 } },
     grid: { left: 50, right: 20, top: 36, bottom: 40 },
     xAxis: {
       type: 'value',
@@ -167,10 +168,10 @@ function drawCurve() {
       name: isDts ? '温度余量（小=热）' : '传感器读值',
       nameLocation: 'middle',
       nameGap: 28,
-      nameTextStyle: { color: '#888' },
-      axisLabel: { color: '#888' },
+      nameTextStyle: { color: CHART_COLORS.axisText },
+      axisLabel: { color: CHART_COLORS.axisText },
     },
-    yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: '#888' }, axisLabel: { color: '#888' } },
+    yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: CHART_COLORS.axisText }, axisLabel: { color: CHART_COLORS.axisText } },
     series,
   }, { notMerge: true });
 }
@@ -386,10 +387,13 @@ function drawPreview() {
     const t = span === 0 ? 0 : (x - f.x0) / span;
     const target = f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t);
     const step = stepAt(x);
+    // 保留各系列的颜色标记（自定义 formatter 不会自带）
+    const dot = (color: string) =>
+      `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span>`;
     return [
       `${dts ? '温度余量' : '读数'} ${Math.round(x)}`,
-      `目标曲线：${Math.round(target)}%`,
-      `取样阶梯：${step === null ? '—' : `${step}%`}`,
+      `${dot(CHART_COLORS.primary)}目标曲线：${Math.round(target)}%`,
+      `${dot(CHART_COLORS.sampled)}取样阶梯：${step === null ? '—' : `${step}%`}`,
     ].join('<br/>');
   };
 
@@ -397,13 +401,13 @@ function drawPreview() {
     {
       animation: false,
       grid: { left: 46, right: 16, top: 26, bottom: 30 },
-      legend: { top: 0, textStyle: { color: '#bbb', fontSize: 10 }, itemWidth: 12, itemHeight: 8 },
+      legend: { top: 0, textStyle: { color: CHART_COLORS.legendTextCompact, fontSize: 10 }, itemWidth: 12, itemHeight: 8 },
       tooltip: { trigger: 'axis', formatter: tipFormatter },
-      xAxis: { type: 'value', name: dts ? '温度余量' : '传感器读数', nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 }, inverse: dts },
-      yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 } },
+      xAxis: { type: 'value', name: dts ? '温度余量' : '传感器读数', nameTextStyle: { color: CHART_COLORS.axisText, fontSize: 10 }, axisLabel: { color: CHART_COLORS.axisText, fontSize: 10 }, inverse: dts },
+      yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: CHART_COLORS.axisText, fontSize: 10 }, axisLabel: { color: CHART_COLORS.axisText, fontSize: 10 } },
       series: [
-        { name: '目标曲线', type: 'line', showSymbol: false, smooth: false, data: curve, lineStyle: { color: '#63e2b7', width: 2 }, itemStyle: { color: '#63e2b7' } },
-        { name: '取样点', type: 'line', step: 'end', data: sampled, lineStyle: { color: '#f0a020', width: 1, type: 'dashed' }, itemStyle: { color: '#f0a020' }, symbolSize: 7 },
+        { name: '目标曲线', type: 'line', showSymbol: false, smooth: false, data: curve, lineStyle: { color: CHART_COLORS.primary, width: 2 }, itemStyle: { color: CHART_COLORS.primary } },
+        { name: '取样点', type: 'line', step: 'end', data: sampled, lineStyle: { color: CHART_COLORS.sampled, width: 1, type: 'dashed' }, itemStyle: { color: CHART_COLORS.sampled }, symbolSize: 7 },
       ],
     },
     { notMerge: true },
@@ -822,7 +826,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
                 <n-button size="tiny" type="primary" secondary @click="openCurveEditor">曲线编辑器</n-button>
                 <template v-if="orderNonMonotonic">
-                  <span class="warn">Reference 有回折：图表按排序后绘制，保存时自动重排</span>
+                  <span class="warn" :style="{ color: CHART_COLORS.sampled }">Reference 有回折：图表按排序后绘制，保存时自动重排</span>
                   <n-button size="tiny" tertiary @click="normalizeOrder(pol); markDirty()">立即重排</n-button>
                 </template>
               </n-space>
@@ -1054,7 +1058,6 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
   }
 }
 .warn {
-  color: #f0a020;
   font-size: 12px;
 }
 .pt {

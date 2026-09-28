@@ -6,6 +6,7 @@ import { bmcGet } from '../api';
 import type { ChassisStatus, FirmwareInfo, Sensor, Uptime } from '../types';
 import { useIsMobile } from '../useMediaQuery';
 import { useChartAutoResize } from '../useChartAutoResize';
+import { CHART_COLORS, PREVIEW_PALETTE } from '../chartTheme';
 
 const isMobile = useIsMobile();
 
@@ -55,20 +56,20 @@ function lineOption(map: Map<string, { t: number; v: number }[]>, yName: string)
     animation: false,
     tooltip: { trigger: 'axis' },
     legend: isMobile.value
-      ? { top: 0, textStyle: { color: '#bbb', fontSize: 10 }, itemGap: 6, itemWidth: 12, itemHeight: 8 }
-      : { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
+      ? { top: 0, textStyle: { color: CHART_COLORS.legendTextCompact, fontSize: 10 }, itemGap: 6, itemWidth: 12, itemHeight: 8 }
+      : { top: 0, textStyle: { color: CHART_COLORS.legendText, fontSize: 11 } },
     grid: {
       left: 44,
       right: 12,
       top: isMobile.value ? 20 + legendRows * 18 : 30,
       bottom: 24,
     },
-    xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
+    xAxis: { type: 'time', axisLabel: { color: CHART_COLORS.axisText, hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
     yAxis: {
       type: 'value',
       name: yName,
-      nameTextStyle: { color: '#888', fontSize: isMobile.value ? 10 : 12 },
-      axisLabel: { color: '#888', fontSize: isMobile.value ? 10 : 12 },
+      nameTextStyle: { color: CHART_COLORS.axisText, fontSize: isMobile.value ? 10 : 12 },
+      axisLabel: { color: CHART_COLORS.axisText, fontSize: isMobile.value ? 10 : 12 },
       scale: true,
     },
     series,
