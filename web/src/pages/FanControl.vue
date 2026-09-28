@@ -40,6 +40,7 @@ const isRunning = computed(() => mode.value === selectedName.value);
 function normalizePolicy(pol: FanPolicy): FanPolicy {
   return {
     ...pol,
+    iPolicyType: pol.iPolicyType === ALGO_STEP ? ALGO_STEP : ALGO_SLOPE,
     arrHexVendorID: (pol as FanPolicy & { arrHexVendorID?: string[] }).arrHexVendorID ?? [],
     arrHexDeviceID: (pol as FanPolicy & { arrHexDeviceID?: string[] }).arrHexDeviceID ?? [],
     iPCIEDeviceEnable: (pol as FanPolicy & { iPCIEDeviceEnable?: number }).iPCIEDeviceEnable ?? 0,
@@ -53,7 +54,7 @@ function newProfile(name: string): FanProfile {
     strName: name,
     arrPolicy: [
       {
-        iPolicyType: 2, iInSDR: 1, iSensorCode: 1, iInitDuty: 30,
+        iPolicyType: ALGO_SLOPE, iInSDR: 1, iSensorCode: 1, iInitDuty: 30,
         iCpuTdp: 0, iAmbientSensor: 0, iAmbientSensorTemp: 0,
         arrSensor: [], arrFanSensor: [],
         // 默认曲线按"越热越快"给（普通温度源的常规方向）
@@ -132,10 +133,12 @@ function drawCurve() {
   if (!pol || !chart) return;
   const runPol = profiles.value.find((p) => p.strName === mode.value)?.arrPolicy[0];
   const isEditingRunning = editing.value?.strName === mode.value;
+  const stepOpt = isStepAlgo(pol.iPolicyType) ? ({ step: 'end' } as const) : {};
   const series: echarts.SeriesOption[] = [
     {
       name: isEditingRunning ? '当前运行' : '编辑中',
       type: 'line',
+      ...stepOpt,
       data: orderedPoints(pol),
       lineStyle: { color: CHART_COLORS.primary, width: 2 },
       itemStyle: { color: CHART_COLORS.primary },
@@ -146,6 +149,7 @@ function drawCurve() {
     series.push({
       name: `当前运行（${mode.value}）`,
       type: 'line',
+      ...(isStepAlgo(runPol.iPolicyType) ? ({ step: 'end' } as const) : {}),
       data: orderedPoints(runPol),
       lineStyle: { color: CHART_COLORS.reference, type: 'dashed' },
       itemStyle: { color: CHART_COLORS.reference },
@@ -278,12 +282,24 @@ function curveRatio(shape: CurveShape, t: number): number {
 }
 
 /**
- * 生成「按参考点线性插值」的求值函数。
- * 依据：固件算法字段 iPolicyType 只有 Step(1) / Slope(2) 两种，本档案为 Slope；
- * 实测占空比在参考点之间连续变化（非 Step 的保持行为），故按相邻点线性插值取值，
- * 超出两端钳位。
+ * 生成「按参考点取值」的求值函数。
+ * 算法来自档案字段 iPolicyType（原版 Algorithm 下拉框只有两项）：
+ *   1 = Step  阶梯：读数在两参考点之间时保持前一参考点的占空比
+ *   2 = Slope 斜率：相邻参考点之间线性插值
+ * 两者都超出两端钳位。
  */
-function makeInterpolator(pairs: { ref: number; duty: number }[]): (x: number) => number {
+const ALGO_STEP = 1;
+const ALGO_SLOPE = 2;
+const algoOptions = [
+  { label: 'Slope（斜率插值）', value: ALGO_SLOPE },
+  { label: 'Step（阶梯保持）', value: ALGO_STEP },
+];
+
+function isStepAlgo(algo: number | undefined): boolean {
+  return algo === ALGO_STEP;
+}
+
+function makeEvaluator(pairs: { ref: number; duty: number }[], algo: number | undefined): (x: number) => number {
   const seq = [...pairs].sort((a, b) => a.ref - b.ref);
   return (x: number): number => {
     if (seq.length === 0) return 0;
@@ -296,6 +312,7 @@ function makeInterpolator(pairs: { ref: number; duty: number }[]): (x: number) =
       const a = seq[i];
       const b = seq[i + 1];
       if (x >= a.ref && x <= b.ref) {
+        if (isStepAlgo(algo)) return a.duty;
         const span = b.ref - a.ref;
         return span === 0 ? a.duty : a.duty + ((b.duty - a.duty) * (x - a.ref)) / span;
       }
@@ -391,7 +408,7 @@ function drawPreview() {
    * 读数与占空比都取整（固件的参考点/占空比本就是整数），两条系列共用同一组整数读数网格，
    * 铺满整段区间 —— 这样默认 tooltip 在任意位置都能同时命中两条系列，无需自定义 formatter。
    */
-  const interpAt = makeInterpolator(pairs);
+  const interpAt = makeEvaluator(pairs, pol0?.iPolicyType);
   const grid = 60;
   const xs = [
     ...new Set(
@@ -801,6 +818,17 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 <span class="lbl">滞回 iHysteresis</span>
                 <n-input-number class="ctrl" v-model:value="pol.iHysteresis" size="small" :min="0" :max="100" @update:value="markDirty" />
               </div>
+              <div class="field">
+                <span class="lbl">算法</span>
+                <n-select
+                  class="ctrl"
+                  v-model:value="pol.iPolicyType"
+                  :options="algoOptions"
+                  size="small"
+                  :style="isMobile ? undefined : 'min-width: 170px'"
+                  @update:value="markDirty"
+                />
+              </div>
             </div>
 
             <div class="field-rows">
@@ -1015,7 +1043,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         <div ref="previewEl" style="height: 220px" />
 
         <p class="dim" style="margin: 0">
-          绿色为目标曲线，橙色虚线是按取样点线性插值还原的取值曲线（与固件 Slope 行为一致）。<b>应用</b>后填充到「数据点」列表，确认无误再点「保存到 BMC」写入。
+          绿色为目标曲线，橙色虚线是按取样点还原的取值曲线（Slope 按斜率插值、Step 保持前一参考点）。<b>应用</b>后填充到「数据点」列表，确认无误再点「保存到 BMC」写入。
           <template v-if="pol && isDtsSource(pol)">源传感器为 DTS（温度余量），曲线方向已按「越热越快」自动映射。</template>
         </p>
       </n-space>
@@ -1054,6 +1082,11 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
   display: flex;
   align-items: center;
   gap: 12px;
+}
+/* 标签不参与压缩/换行：否则多个字段挤一行时会被压成竖排单字 */
+.field > .lbl {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 @media (max-width: 768px) {
   .field {
