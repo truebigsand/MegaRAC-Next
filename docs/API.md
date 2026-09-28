@@ -138,12 +138,17 @@ Bundle 中 `models/chassis_status`：
 ```
 新建档案: POST /api/settings/fanprofile/collection
           body = 单个档案对象（含 strVersion/strName/arrPolicy[]），HTTP 200 返回写入后的对象
+          ⚠️ 仅创建：名称已存在时返回 500 {"error":"Request Create FanProFile Name Already Exist","code":1010}
+更新档案: PUT /api/settings/fanprofile/collection/<名称>
+          body = 完整档案对象，HTTP 200 返回更新后的对象（实测改动生效）
+          ⚠️ PUT 到集合路径（无名称）返回 404 Invalid API Call
+删除档案: DELETE /api/settings/fanprofile/collection/<名称>，HTTP 200 {}
 切换运行: POST /api/settings/fanprofile/mode
           body = {"strMode":"<档案名>"}，HTTP 200 返回 {"strMode":"<档案名>"}
 停止/回退: 同上传 strMode:"default"
 ```
-实测记录：以 default 为模板新增 `CPU_TEMP` 档案并切换运行模式，写入与切换均 200；写入后 `GET collection` 可见新档案，`GET mode` 返回 CPU_TEMP；风扇转速按新档案生效（30 秒观察稳定）。
-备份：写入前的档案与运行模式已存 `reverse/profiles/backup-*.json`。
+实测记录：POST 创建 `CPU_TEMP`/`ZZ_TEST_UI` 均 200；重复 POST 同名复现 500 重名错误；PUT `<名称>` 修改 iInitDuty 33→35 并回读确认生效；DELETE 后档案从列表消失。风扇转速按新档案生效（30 秒观察稳定）。
+备份：写入前的档案与运行模式已存 `reverse/profiles/backup-*.json`；协议验证脚本 `reverse/verify_profile_update.mjs`。
 
 ### DTS ↔ CPU_TEMP 等效换算（实测）
 
