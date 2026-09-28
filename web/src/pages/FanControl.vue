@@ -590,37 +590,50 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 
         <template v-if="editing && pol">
           <n-space vertical size="medium" style="margin-top: 16px">
-            <n-space align="center" :size="16">
-              <span class="lbl">设定档名称</span>
-              <n-input v-model:value="editing.strName" size="small" :style="isMobile ? 'width: 140px' : 'width: 200px'" @update:value="markDirty" />
-              <span class="lbl">初始 Duty (%)</span>
-              <n-input-number v-model:value="pol.iInitDuty" size="small" :min="0" :max="100" @update:value="markDirty" />
-              <span class="lbl">滞回 iHysteresis</span>
-              <n-input-number v-model:value="pol.iHysteresis" size="small" :min="0" :max="100" @update:value="markDirty" />
-            </n-space>
+            <!-- 窄屏：每项独占一行（标签等宽对齐），桌面端一行平铺 -->
+            <div class="field-rows">
+              <div class="field">
+                <span class="lbl">设定档名称</span>
+                <n-input class="ctrl" v-model:value="editing.strName" size="small" :style="isMobile ? undefined : 'width: 200px'" @update:value="markDirty" />
+              </div>
+              <div class="field">
+                <span class="lbl">初始 Duty (%)</span>
+                <n-input-number class="ctrl" v-model:value="pol.iInitDuty" size="small" :min="0" :max="100" @update:value="markDirty" />
+              </div>
+              <div class="field">
+                <span class="lbl">滞回 iHysteresis</span>
+                <n-input-number class="ctrl" v-model:value="pol.iHysteresis" size="small" :min="0" :max="100" @update:value="markDirty" />
+              </div>
+            </div>
 
-            <n-space align="center" :size="16">
-              <span class="lbl">源传感器（温度）</span>
-              <n-select
-                v-model:value="pol.arrSensor"
-                :options="tempSensorOptions"
-                multiple
-                size="small"
-                :style="isMobile ? 'width: 100%' : 'min-width: 280px'"
-                placeholder="选择温度源"
-                @update:value="markDirty"
-              />
-              <span class="lbl">被控风扇</span>
-              <n-select
-                v-model:value="pol.arrFanSensor"
-                :options="fanSensorOptions"
-                multiple
-                size="small"
-                :style="isMobile ? 'width: 100%' : 'min-width: 280px'"
-                placeholder="选择风扇"
-                @update:value="markDirty"
-              />
-            </n-space>
+            <div class="field-rows">
+              <div class="field">
+                <span class="lbl">源传感器（温度）</span>
+                <n-select
+                  class="ctrl"
+                  v-model:value="pol.arrSensor"
+                  :options="tempSensorOptions"
+                  multiple
+                  size="small"
+                  :style="isMobile ? undefined : 'min-width: 280px'"
+                  placeholder="选择温度源"
+                  @update:value="markDirty"
+                />
+              </div>
+              <div class="field">
+                <span class="lbl">被控风扇</span>
+                <n-select
+                  class="ctrl"
+                  v-model:value="pol.arrFanSensor"
+                  :options="fanSensorOptions"
+                  multiple
+                  size="small"
+                  :style="isMobile ? undefined : 'min-width: 280px'"
+                  placeholder="选择风扇"
+                  @update:value="markDirty"
+                />
+              </div>
+            </div>
 
             <div>
               <n-space align="center" :size="8">
@@ -633,9 +646,23 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               <n-space vertical size="small" style="margin-top: 8px">
                 <n-space v-for="(_, i) in pol.arrRef" :key="i" align="center" :size="8">
                   <span class="pt">点 {{ i }}</span>
-                  <n-input-number v-model:value="pol.arrRef[i]" size="small" :style="isMobile ? 'width: 84px' : 'width: 120px'" @update:value="markDirty" />
+                  <n-input-number
+                    v-model:value="pol.arrRef[i]"
+                    size="small"
+                    :show-button="!isMobile"
+                    :style="isMobile ? 'width: 76px' : 'width: 120px'"
+                    @update:value="markDirty"
+                  />
                   <span>→</span>
-                  <n-input-number v-model:value="pol.arrDuty[i]" size="small" :style="isMobile ? 'width: 84px' : 'width: 110px'" :min="0" :max="100" @update:value="markDirty">
+                  <n-input-number
+                    v-model:value="pol.arrDuty[i]"
+                    size="small"
+                    :show-button="!isMobile"
+                    :style="isMobile ? 'width: 92px' : 'width: 110px'"
+                    :min="0"
+                    :max="100"
+                    @update:value="markDirty"
+                  >
                     <template #suffix>%</template>
                   </n-input-number>
                   <n-button size="tiny" quaternary type="error" :disabled="pol.arrRef.length <= 1" @click="removePoint(i)">删除</n-button>
@@ -747,6 +774,31 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 .unit {
   color: #777;
   font-size: 12px;
+}
+/* 字段行：桌面端一行平铺；窄屏每项独占一行、标签等宽对齐 */
+.field-rows {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+@media (max-width: 768px) {
+  .field {
+    flex: 1 1 100%;
+  }
+  .field > .lbl {
+    flex: 0 0 112px;
+  }
+  /* basis 必须为 0：输入框默认宽度接近 100%，否则会整行换到下一行 */
+  .field > .ctrl {
+    flex: 1 1 0;
+    min-width: 0;
+  }
 }
 .warn {
   color: #f0a020;

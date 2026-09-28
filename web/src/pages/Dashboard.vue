@@ -48,13 +48,28 @@ function lineOption(map: Map<string, { t: number; v: number }[]>, yName: string)
       data: points.map((p) => [p.t, p.v]),
     });
   }
+  // 窄屏：图例缩小换行，并按图例行数动态预留顶部空间（Y 轴单位名也在顶部）
+  const legendRows = Math.min(3, Math.ceil(series.length / 4));
   return {
     animation: false,
     tooltip: { trigger: 'axis' },
-    legend: { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
-    grid: { left: 44, right: 12, top: 30, bottom: 24 },
-    xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true } },
-    yAxis: { type: 'value', name: yName, nameTextStyle: { color: '#888' }, axisLabel: { color: '#888' }, scale: true },
+    legend: isMobile.value
+      ? { top: 0, textStyle: { fontSize: 10 }, itemGap: 6, itemWidth: 12, itemHeight: 8 }
+      : { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
+    grid: {
+      left: 44,
+      right: 12,
+      top: isMobile.value ? 20 + legendRows * 18 : 30,
+      bottom: 24,
+    },
+    xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
+    yAxis: {
+      type: 'value',
+      name: yName,
+      nameTextStyle: { color: '#888', fontSize: isMobile.value ? 10 : 12 },
+      axisLabel: { color: '#888', fontSize: isMobile.value ? 10 : 12 },
+      scale: true,
+    },
     series,
   };
 }

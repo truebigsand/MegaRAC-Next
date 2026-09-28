@@ -58,10 +58,13 @@ async function refresh() {
       {
         animation: false,
         tooltip: { trigger: 'axis' },
-        legend: { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
-        grid: { left: 60, right: 20, top: 36, bottom: 40 },
-        xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true } },
-        yAxis: { type: 'value', scale: true, axisLabel: { color: '#888' } },
+        // 窄屏图例单行可翻页并预留空间，避免多行图例压住曲线
+        legend: isMobile.value
+          ? { type: 'scroll', top: 0, textStyle: { fontSize: 10 }, itemGap: 8, itemWidth: 12, itemHeight: 8, pageIconSize: 10 }
+          : { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
+        grid: { left: isMobile.value ? 48 : 60, right: 20, top: isMobile.value ? 42 : 36, bottom: 40 },
+        xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
+        yAxis: { type: 'value', scale: true, axisLabel: { color: '#888', fontSize: isMobile.value ? 10 : 12 } },
         series,
       },
       { notMerge: true },
