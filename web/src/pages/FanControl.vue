@@ -51,7 +51,8 @@ function newProfile(name: string): FanProfile {
         iPolicyType: 2, iInSDR: 1, iSensorCode: 1, iInitDuty: 30,
         iCpuTdp: 0, iAmbientSensor: 0, iAmbientSensorTemp: 0,
         arrSensor: [], arrFanSensor: [],
-        arrRef: [40, 30, 20, 10], arrDuty: [30, 60, 85, 100],
+        // 默认曲线按"越热越快"给（普通温度源的常规方向）
+        arrRef: [40, 50, 60, 70], arrDuty: [30, 60, 85, 100],
         arrHexVendorID: [], arrHexDeviceID: [], iPCIEDeviceEnable: 0, iHysteresis: 0,
       } as FanPolicy,
     ],
@@ -278,9 +279,47 @@ async function saveProfile() {
   const pol = editing.value.arrPolicy[0];
   if (pol.arrSensor.length === 0) return message.error('请至少选择一个源传感器');
   if (pol.arrFanSensor.length === 0) return message.error('请至少选择一个被控风扇');
-  const savedName = editing.value.strName;
+  const savedName = editing.value.strName.trim();
+  if (!savedName) return message.error('请填写设定档名称');
   const pairs = pol.arrRef.map((r, i) => `${r}→${pol.arrDuty[i]}%`).join('  ');
   const running = savedName === mode.value;
+  const existedBefore = sourceName.value;
+  const renamed = existedBefore !== null && existedBefore !== savedName;
+  const willUpdate = sourceName.value === savedName && profiles.value.some((p) => p.strName === savedName);
+
+  if (renamed) {
+    // 改名：固件没有"重命名"接口，只能另建新档案
+    dialog.warning({
+      title: `名称已修改：${existedBefore} → ${savedName}`,
+      content: () =>
+        h('div', [
+          h('div', `将创建新档案「${savedName}」，原档案「${existedBefore}」保持不动。`),
+          h('div', { style: 'color:#999;margin-top:6px' }, '如需删除原档案，请在列表中选中它后点「删除」。'),
+        ]),
+      positiveText: '创建新档案',
+      negativeText: '取消',
+      onPositiveClick: async () => {
+        try {
+          const payload = JSON.parse(JSON.stringify(editing.value)) as FanProfile;
+          payload.strName = savedName;
+          normalizeOrder(payload.arrPolicy[0]);
+          normalizeConditions(payload.arrPolicy[0]);
+          await bmcSend('POST', 'settings/fanprofile/collection', payload);
+          message.success(`已创建「${savedName}」（原档案「${existedBefore}」保留）`);
+          await refresh();
+          loadForEdit(savedName);
+        } catch (e) {
+          showBmcWriteError(e, savedName);
+        }
+      },
+    });
+    return;
+  }
+
+  if (!willUpdate && profiles.value.some((p) => p.strName === savedName)) {
+    return message.error(`档案「${savedName}」已存在，请更换名称，或选中它后再保存`);
+  }
+
   dialog.warning({
     title: `保存设定档「${savedName}」`,
     content: () =>
@@ -296,14 +335,17 @@ async function saveProfile() {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        // 保存前按固件规范重排曲线点顺序、规范执行条件（成对/配对字段保持一致）
         const payload = JSON.parse(JSON.stringify(editing.value)) as FanProfile;
         normalizeOrder(payload.arrPolicy[0]);
         normalizeConditions(payload.arrPolicy[0]);
-        await bmcSend('POST', 'settings/fanprofile/collection', payload);
-        message.success('已写入');
+        // 已存在的档案用 PUT 更新；新档案用 POST 创建（固件 POST 拒绝重名）
+        if (willUpdate) {
+          await bmcSend('PUT', `settings/fanprofile/collection/${encodeURIComponent(savedName)}`, payload);
+        } else {
+          await bmcSend('POST', 'settings/fanprofile/collection', payload);
+        }
+        message.success(willUpdate ? '已更新' : '已创建');
         await refresh();
-        // 从服务端重新载入，保证编辑器与已保存内容一致
         if (profiles.value.some((p) => p.strName === savedName)) {
           loadForEdit(savedName);
         } else {
@@ -311,10 +353,20 @@ async function saveProfile() {
           dirty.value = false;
         }
       } catch (e) {
-        message.error((e as Error).message);
+        showBmcWriteError(e, savedName);
       }
     },
   });
+}
+
+/** 把固件的英文错误码翻译成可操作的提示 */
+function showBmcWriteError(e: unknown, name: string) {
+  const msg = (e as Error).message;
+  if (msg.includes('Name Already Exist')) {
+    message.error(`档案「${name}」已存在：更新已有档案请先选中它，另存为新档案请用「另存为…」`);
+  } else {
+    message.error(msg);
+  }
 }
 
 async function playProfile(name: string) {

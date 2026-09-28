@@ -17,6 +17,17 @@ const app = Fastify({
 
 await app.register(cookie);
 
+// 容忍空 body 的 JSON 请求（例如不带内容的 DELETE），避免 FST_ERR_CTP_EMPTY_JSON_BODY
+app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+  const text = String(body ?? '').trim();
+  if (text === '') return done(null, undefined);
+  try {
+    done(null, JSON.parse(text));
+  } catch (e) {
+    done(e as Error, undefined);
+  }
+});
+
 // ---------- 传感器历史（接口化存储，默认 SQLite） ----------
 const historyStore = new SqliteHistoryStore(HISTORY_DB);
 await historyStore.init();

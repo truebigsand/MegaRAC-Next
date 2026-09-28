@@ -46,7 +46,8 @@ export async function localGet<T>(path: string): Promise<T> {
 export async function bmcSend<T>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const res = await fetch('/bmc/' + path.replace(/^\/?api\//, ''), {
     method,
-    headers: { 'content-type': 'application/json' },
+    // 无 body 时不能带 JSON content-type，否则服务端会拒绝空 body
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return (await handle(res)) as T;
