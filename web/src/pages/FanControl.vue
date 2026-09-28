@@ -73,14 +73,24 @@ function loadForEdit(name: string | null) {
   if (name === null) {
     editing.value = newProfile(nextNewName());
     selectedName.value = '';
+    dirty.value = true; // 新档案本身即未保存状态，保存/还原立即可用
   } else {
     const src = profiles.value.find((p) => p.strName === name);
     if (!src) return;
     editing.value = JSON.parse(JSON.stringify({ ...src, arrPolicy: src.arrPolicy.map(normalizePolicy) })) as FanProfile;
     selectedName.value = name;
+    dirty.value = false;
   }
-  dirty.value = false;
   drawCurve();
+}
+
+/** 还原：丢弃未保存改动。新建中则退出新建、回到运行中的档案 */
+function revert() {
+  if (sourceName.value === null) {
+    loadForEdit(mode.value || profiles.value[0]?.strName || null);
+  } else {
+    loadForEdit(sourceName.value);
+  }
 }
 
 function markDirty() {
@@ -172,6 +182,24 @@ function normalizeOrder(pol: FanPolicy) {
   pol.arrDuty = pairs.map((p) => p.duty);
 }
 
+/**
+ * 执行条件规范化（对齐固件语义）：
+ * - 未选环境传感器时其阈值清零
+ * - 未启用 PCIe 条件时清空设备列表；启用时按设备库把选中的 DeviceID 展开为
+ *   VendorID/DeviceID 两个配对数组（固件按平行数组存储）
+ */
+function normalizeConditions(pol: FanPolicy) {
+  if (pol.iAmbientSensor === 0) pol.iAmbientSensorTemp = 0;
+  if (pol.iPCIEDeviceEnable !== 1) {
+    pol.arrHexVendorID = [];
+    pol.arrHexDeviceID = [];
+  } else {
+    const picked = pcieDevices.value.filter((d) => pol.arrHexDeviceID.includes(d.hexDeviceID));
+    pol.arrHexVendorID = picked.map((d) => d.hexVendorID);
+    pol.arrHexDeviceID = picked.map((d) => d.hexDeviceID);
+  }
+}
+
 function addPoint() {
   const pol = editing.value?.arrPolicy[0];
   if (!pol) return;
@@ -238,9 +266,10 @@ async function saveProfile() {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        // 保存前按固件规范重排曲线点顺序（成对移动，语义不变）
+        // 保存前按固件规范重排曲线点顺序、规范执行条件（成对/配对字段保持一致）
         const payload = JSON.parse(JSON.stringify(editing.value)) as FanProfile;
         normalizeOrder(payload.arrPolicy[0]);
+        normalizeConditions(payload.arrPolicy[0]);
         await bmcSend('POST', 'settings/fanprofile/collection', payload);
         message.success('已写入');
         await refresh();
@@ -463,8 +492,12 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
               <n-checkbox :checked="pol.iCpuTdp > 0" @update:checked="(v: boolean) => { pol.iCpuTdp = v ? (pol.iCpuTdp || 280) : 0; markDirty(); }">
                 CPU TDP (W)
               </n-checkbox>
-              <n-input-number v-if="pol.iCpuTdp > 0" v-model:value="pol.iCpuTdp" size="small" style="width: 110px" @update:value="markDirty" />
-              <n-checkbox :checked="pol.iAmbientSensor > 0" @update:checked="(v: boolean) => { pol.iAmbientSensor = v ? (pol.iAmbientSensor || tempSensorOptions[0]?.value || 0) : 0; markDirty(); }">
+              <n-space v-if="pol.iCpuTdp > 0" align="center" :size="4">
+                <span>&gt;</span>
+                <n-input-number v-model:value="pol.iCpuTdp" size="small" style="width: 110px" :min="1" :max="255" @update:value="markDirty" />
+                <span class="unit">W</span>
+              </n-space>
+              <n-checkbox :checked="pol.iAmbientSensor > 0" @update:checked="(v: boolean) => { pol.iAmbientSensor = v ? (pol.iAmbientSensor || tempSensorOptions[0]?.value || 0) : 0; if (v && pol.iAmbientSensorTemp === 0) pol.iAmbientSensorTemp = 40; markDirty(); }">
                 环境温度传感器
               </n-checkbox>
               <n-select
@@ -475,6 +508,11 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                 style="width: 200px"
                 @update:value="markDirty"
               />
+              <n-space v-if="pol.iAmbientSensor > 0" align="center" :size="4">
+                <span>&gt;</span>
+                <n-input-number v-model:value="pol.iAmbientSensorTemp" size="small" style="width: 100px" :min="0" :max="255" @update:value="markDirty" />
+                <span class="unit">°C</span>
+              </n-space>
               <n-checkbox
                 :checked="pol.iPCIEDeviceEnable === 1"
                 @update:checked="(v: boolean) => { pol.iPCIEDeviceEnable = v ? 1 : 0; markDirty(); }"
@@ -494,8 +532,10 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
             />
 
             <n-space>
-              <n-button type="primary" :disabled="!dirty" @click="saveProfile">保存到 BMC</n-button>
-              <n-button :disabled="!dirty" @click="loadForEdit(sourceName)">还原</n-button>
+              <n-button type="primary" :disabled="!dirty" @click="saveProfile">
+                {{ sourceName === null ? '创建并保存' : '保存到 BMC' }}
+              </n-button>
+              <n-button :disabled="!dirty" @click="revert">还原</n-button>
               <n-button @click="exportProfile">导出 JSON</n-button>
               <n-upload :show-file-list="false" :max="1" @change="onImport">
                 <n-button size="small">导入 JSON</n-button>
@@ -519,6 +559,10 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 <style scoped>
 .lbl {
   color: #999;
+  font-size: 12px;
+}
+.unit {
+  color: #777;
   font-size: 12px;
 }
 .pt {
