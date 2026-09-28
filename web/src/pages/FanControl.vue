@@ -119,8 +119,7 @@ function drawCurve() {
   }
   // AMD DTS 传感器读的是"距临界温度的余量"（Tcrit − 实际温度），越小越热。
   // 与原版一致：DTS 源时横轴反向（左冷右热），曲线才能读成"越热→越快"。
-  const srcSensor = sensors.value.find((s) => pol.arrSensor.includes(s.sensor_number));
-  const isDts = !!srcSensor && srcSensor.name.includes('DTS');
+  const isDts = isDtsSource(pol);
   chart.setOption({
     animation: false,
     tooltip: { trigger: 'axis' },
@@ -150,13 +149,42 @@ const fanSensorOptions = computed(() =>
 const ambientOptions = computed(() => [{ label: 'N/A', value: 0 }, ...tempSensorOptions.value]);
 
 // ---------- 曲线点编辑 ----------
+/** 固件上限：单策略最多 32 个 Reference 点（原版超出时报 Reach max number of reference support） */
+const MAX_REFS = 32;
+/** 温度类 SDR 的读数上限（8 位量程），原版新增数据点即取此值 */
+const SDR_MAX_REF = 127;
+
+/** 源传感器是否为 DTS（AMD 温度余量）—— 决定曲线顺序规范与横轴方向 */
+function isDtsSource(pol: FanPolicy): boolean {
+  const src = sensors.value.find((s) => pol.arrSensor.includes(s.sensor_number));
+  return !!src && src.name.toUpperCase().includes('DTS');
+}
+
+/**
+ * 顺序规范化（对齐固件 SortRefTable）：(Reference, Duty) 成对按 Reference 升序，
+ * DTS 源再整体倒序 —— 即普通温度存升序、DTS 存降序。
+ */
+function normalizeOrder(pol: FanPolicy) {
+  const pairs = pol.arrRef.map((ref, i) => ({ ref, duty: pol.arrDuty[i] }));
+  pairs.sort((a, b) => a.ref - b.ref);
+  if (isDtsSource(pol)) pairs.reverse();
+  pol.arrRef = pairs.map((p) => p.ref);
+  pol.arrDuty = pairs.map((p) => p.duty);
+}
+
 function addPoint() {
   const pol = editing.value?.arrPolicy[0];
   if (!pol) return;
-  pol.arrRef.push(0);
+  if (pol.arrRef.length >= MAX_REFS) {
+    message.warning(`最多 ${MAX_REFS} 个数据点（固件上限）`);
+    return;
+  }
+  pol.arrRef.push(SDR_MAX_REF);
   pol.arrDuty.push(100);
+  normalizeOrder(pol);
   markDirty();
 }
+
 function removePoint(i: number) {
   const pol = editing.value?.arrPolicy[0];
   if (!pol || pol.arrRef.length <= 1) return;
@@ -210,7 +238,10 @@ async function saveProfile() {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        await bmcSend('POST', 'settings/fanprofile/collection', editing.value);
+        // 保存前按固件规范重排曲线点顺序（成对移动，语义不变）
+        const payload = JSON.parse(JSON.stringify(editing.value)) as FanProfile;
+        normalizeOrder(payload.arrPolicy[0]);
+        await bmcSend('POST', 'settings/fanprofile/collection', payload);
         message.success('已写入');
         await refresh();
         // 从服务端重新载入，保证编辑器与已保存内容一致
@@ -401,11 +432,8 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
             </n-space>
 
             <div>
-              <n-space justify="space-between" align="center" style="margin-bottom: 6px">
-                <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
-                <n-button size="tiny" @click="addPoint">+ 加点</n-button>
-              </n-space>
-              <n-space vertical size="small">
+              <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
+              <n-space vertical size="small" style="margin-top: 8px">
                 <n-space v-for="(_, i) in pol.arrRef" :key="i" align="center" :size="8">
                   <span class="pt">点 {{ i }}</span>
                   <n-input-number v-model:value="pol.arrRef[i]" size="small" style="width: 120px" @update:value="markDirty" />
@@ -414,6 +442,18 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                     <template #suffix>%</template>
                   </n-input-number>
                   <n-button size="tiny" quaternary type="error" :disabled="pol.arrRef.length <= 1" @click="removePoint(i)">删</n-button>
+                </n-space>
+                <n-space align="center" :size="8">
+                  <span class="pt" />
+                  <n-button
+                    dashed
+                    size="small"
+                    style="width: 256px"
+                    :disabled="pol.arrRef.length >= MAX_REFS"
+                    @click="addPoint"
+                  >
+                    ＋ 添加数据点（{{ pol.arrRef.length }}/{{ MAX_REFS }}）
+                  </n-button>
                 </n-space>
               </n-space>
             </div>
