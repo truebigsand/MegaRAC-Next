@@ -441,7 +441,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
                   <n-input-number v-model:value="pol.arrDuty[i]" size="small" style="width: 110px" :min="0" :max="100" @update:value="markDirty">
                     <template #suffix>%</template>
                   </n-input-number>
-                  <n-button size="tiny" quaternary type="error" :disabled="pol.arrRef.length <= 1" @click="removePoint(i)">删</n-button>
+                  <n-button size="tiny" quaternary type="error" :disabled="pol.arrRef.length <= 1" @click="removePoint(i)">删除</n-button>
                 </n-space>
                 <n-space align="center" :size="8">
                   <span class="pt" />
