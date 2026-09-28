@@ -247,6 +247,150 @@ function removePoint(i: number) {
   markDirty();
 }
 
+// ---------- 曲线编辑器（预设曲线 → 取样为有限个数据点） ----------
+type CurveShape = 'linear' | 'quiet' | 'standard' | 'aggressive' | 'smooth' | 'step';
+
+const shapeOptions: { label: string; value: CurveShape }[] = [
+  { label: '线性', value: 'linear' },
+  { label: '安静（晚提速）', value: 'quiet' },
+  { label: '标准', value: 'standard' },
+  { label: '激进（早提速）', value: 'aggressive' },
+  { label: 'S 形（两端平缓）', value: 'smooth' },
+  { label: '阶梯', value: 'step' },
+];
+
+/** 归一化曲线：t∈[0,1] 为「凉端→热端」的位置，返回 0..1（占空比比例） */
+function curveRatio(shape: CurveShape, t: number): number {
+  const c = Math.min(1, Math.max(0, t));
+  switch (shape) {
+    case 'quiet':
+      return Math.pow(c, 2.5);
+    case 'standard':
+      return Math.pow(c, 1.5);
+    case 'aggressive':
+      return Math.pow(c, 0.5);
+    case 'smooth':
+      return c * c * (3 - 2 * c);
+    case 'step':
+      return Math.min(1, Math.floor(c * 4) / 3);
+    default:
+      return c;
+  }
+}
+
+const showCurveEditor = ref(false);
+const previewEl = ref<HTMLDivElement>();
+let previewChart: echarts.ECharts | null = null;
+const curveForm = ref({
+  shape: 'standard' as CurveShape,
+  samples: 6,
+  x0: 40,
+  x1: 85,
+  y0: 30,
+  y1: 100,
+});
+
+function openCurveEditor() {
+  const pol0 = pol.value;
+  if (!pol0) return;
+  const refs = pol0.arrRef.filter((r) => Number.isFinite(r));
+  const duties = pol0.arrDuty.filter((d) => Number.isFinite(d));
+  // 读数范围默认沿用当前点范围；没有点时给一个常见温度区间
+  if (refs.length >= 2) {
+    curveForm.value.x0 = Math.min(...refs);
+    curveForm.value.x1 = Math.max(...refs);
+  } else {
+    curveForm.value.x0 = isDtsSource(pol0) ? 50 : 40;
+    curveForm.value.x1 = isDtsSource(pol0) ? 10 : 85;
+  }
+  if (duties.length >= 2) {
+    curveForm.value.y0 = 30;
+    curveForm.value.y1 = 100;
+  }
+  curveForm.value.samples = Math.max(2, Math.min(MAX_REFS, refs.length || 6));
+  showCurveEditor.value = true;
+}
+
+/** 按当前表单取样为 (读数, 占空比) 点集 */
+function buildSamples(): { refs: number[]; duties: number[] } {
+  const f = curveForm.value;
+  const pol0 = pol.value;
+  const dts = pol0 ? isDtsSource(pol0) : false;
+  const n = Math.max(2, Math.min(MAX_REFS, Math.round(f.samples)));
+  const refs: number[] = [];
+  const duties: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const x = Math.round(f.x0 + (f.x1 - f.x0) * t);
+    // DTS 是温度余量（越小越热），把曲线按「越热越快」的方向映射
+    const y = Math.round(f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t));
+    if (refs.length > 0 && refs[refs.length - 1] === x) continue; // 取整后重复的读数跳过
+    refs.push(x);
+    duties.push(Math.max(0, Math.min(100, y)));
+  }
+  return { refs, duties };
+}
+
+const samplePreview = computed(() => (showCurveEditor.value ? buildSamples() : { refs: [], duties: [] }));
+
+function initPreview() {
+  if (!previewEl.value) return;
+  if (!previewChart) previewChart = echarts.init(previewEl.value);
+  drawPreview();
+}
+
+function disposePreview() {
+  previewChart?.dispose();
+  previewChart = null;
+}
+
+function drawPreview() {
+  if (!previewChart || !previewEl.value) return;
+  const f = curveForm.value;
+  const pol0 = pol.value;
+  const dts = pol0 ? isDtsSource(pol0) : false;
+  const steps = 60;
+  const curve: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    curve.push([f.x0 + (f.x1 - f.x0) * t, f.y0 + (f.y1 - f.y0) * curveRatio(f.shape, dts ? 1 - t : t)]);
+  }
+  const s = buildSamples();
+  const sampled: [number, number][] = s.refs.map((r, i) => [r, s.duties[i]]);
+  previewChart.setOption(
+    {
+      animation: false,
+      grid: { left: 46, right: 16, top: 26, bottom: 30 },
+      legend: { top: 0, textStyle: { color: '#bbb', fontSize: 10 }, itemWidth: 12, itemHeight: 8 },
+      tooltip: { trigger: 'axis' },
+      xAxis: { type: 'value', name: dts ? '温度余量' : '传感器读数', nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 }, inverse: dts },
+      yAxis: { type: 'value', name: 'Duty (%)', min: 0, max: 100, nameTextStyle: { color: '#888', fontSize: 10 }, axisLabel: { color: '#888', fontSize: 10 } },
+      series: [
+        { name: '目标曲线', type: 'line', showSymbol: false, smooth: false, data: curve, lineStyle: { color: '#63e2b7', width: 2 }, itemStyle: { color: '#63e2b7' } },
+        { name: '取样点', type: 'line', step: 'end', data: sampled, lineStyle: { color: '#f0a020', width: 1, type: 'dashed' }, itemStyle: { color: '#f0a020' }, symbolSize: 7 },
+      ],
+    },
+    { notMerge: true },
+  );
+  previewChart.resize();
+}
+
+function applyCurve() {
+  const p = editing.value?.arrPolicy[0];
+  if (!p) return;
+  const s = buildSamples();
+  if (s.refs.length < 2) {
+    message.warning('取样点不足，请增大取样点数或放宽读数范围');
+    return;
+  }
+  p.arrRef = s.refs;
+  p.arrDuty = s.duties;
+  normalizeOrder(p);
+  markDirty();
+  showCurveEditor.value = false;
+  message.success(`已填充 ${s.refs.length} 个数据点，确认后点「保存到 BMC」写入`);
+}
+
 // ---------- 数据加载 ----------
 async function refresh() {
   try {
@@ -640,6 +784,7 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
             <div>
               <n-space align="center" :size="8">
                 <span class="lbl">Policy Reference Table（Reference → Duty 曲线点，Slope 算法）</span>
+                <n-button size="tiny" type="primary" secondary @click="openCurveEditor">曲线编辑器</n-button>
                 <template v-if="orderNonMonotonic">
                   <span class="warn">Reference 有回折：图表按排序后绘制，保存时自动重排</span>
                   <n-button size="tiny" tertiary @click="normalizeOrder(pol); markDirty()">立即重排</n-button>
@@ -765,6 +910,71 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
         <n-input v-model:value="saveAsName" placeholder="新档案名称" @keyup.enter="doSaveAs" />
       </n-space>
     </n-modal>
+
+    <n-modal
+      v-model:show="showCurveEditor"
+      preset="card"
+      title="曲线编辑器"
+      style="width: min(680px, 94vw)"
+      :on-after-enter="initPreview"
+      :on-after-leave="disposePreview"
+    >
+      <n-space vertical size="medium">
+        <div class="field-rows">
+          <div class="field">
+            <span class="lbl">曲线形状</span>
+            <n-select
+              class="ctrl"
+              v-model:value="curveForm.shape"
+              :options="shapeOptions"
+              size="small"
+              style="min-width: 170px"
+              @update:value="drawPreview"
+            />
+          </div>
+          <div class="field">
+            <span class="lbl">取样点数</span>
+            <n-input-number
+              v-model:value="curveForm.samples"
+              size="small"
+              :min="2"
+              :max="MAX_REFS"
+              style="width: 110px"
+              @update:value="drawPreview"
+            />
+            <span class="unit">/ {{ MAX_REFS }}</span>
+          </div>
+        </div>
+
+        <div class="field-rows">
+          <div class="field">
+            <span class="lbl">读数范围</span>
+            <n-input-number v-model:value="curveForm.x0" size="small" style="width: 96px" @update:value="drawPreview" />
+            <span>→</span>
+            <n-input-number v-model:value="curveForm.x1" size="small" style="width: 96px" @update:value="drawPreview" />
+          </div>
+          <div class="field">
+            <span class="lbl">占空比</span>
+            <n-input-number v-model:value="curveForm.y0" size="small" :min="0" :max="100" style="width: 96px" @update:value="drawPreview" />
+            <span>→</span>
+            <n-input-number v-model:value="curveForm.y1" size="small" :min="0" :max="100" style="width: 96px" @update:value="drawPreview" />
+          </div>
+        </div>
+
+        <div ref="previewEl" style="height: 220px" />
+
+        <p class="dim" style="margin: 0">
+          绿色为目标曲线，橙色虚线是按取样点还原的阶梯。<b>应用</b>后填充到「数据点」列表，确认无误再点「保存到 BMC」写入。
+          <template v-if="pol && isDtsSource(pol)">源传感器为 DTS（温度余量），曲线方向已按「越热越快」自动映射。</template>
+        </p>
+      </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showCurveEditor = false">取消</n-button>
+          <n-button type="primary" @click="applyCurve">应用（填充 {{ samplePreview.refs.length }} 个点）</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-spin>
 </template>
 
@@ -776,6 +986,11 @@ const pol = computed(() => editing.value?.arrPolicy[0]);
 .unit {
   color: #777;
   font-size: 12px;
+}
+.dim {
+  color: #8a8a8a;
+  font-size: 12px;
+  line-height: 1.6;
 }
 /* 字段行：桌面端一行平铺；窄屏每项独占一行、标签等宽对齐 */
 .field-rows {
