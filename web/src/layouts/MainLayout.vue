@@ -28,7 +28,17 @@ async function onLogout() {
   router.push('/login');
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 刷新后恢复登录态显示
+  try {
+    const res = await fetch('/api/auth/me');
+    const data = (await res.json()) as { loggedIn: boolean; username?: string };
+    auth.loggedIn = data.loggedIn;
+    auth.username = data.username ?? '';
+    if (!data.loggedIn) router.push('/login');
+  } catch {
+    /* 代理未启动 */
+  }
   // 头部主机状态徽标：3s 轮询 chassis-status
   const poll = async () => {
     try {
