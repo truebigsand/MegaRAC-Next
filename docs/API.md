@@ -150,6 +150,21 @@ Bundle 中 `models/chassis_status`：
 实测记录：POST 创建 `CPU_TEMP`/`ZZ_TEST_UI` 均 200；重复 POST 同名复现 500 重名错误；PUT `<名称>` 修改 iInitDuty 33→35 并回读确认生效；DELETE 后档案从列表消失。风扇转速按新档案生效（30 秒观察稳定）。
 备份：写入前的档案与运行模式已存 `reverse/profiles/backup-*.json`；协议验证脚本 `reverse/verify_profile_update.mjs`。
 
+### 算法字段 iPolicyType（Step / Slope）
+
+原版 UI 的 Algorithm 下拉框只有两项，绑定到档案字段 `iPolicyType`：
+
+| 值 | 名称 | 含义 |
+|---|---|---|
+| 1 | Step | 阶梯：读数在参考点之间时保持前一参考点的占空比 |
+| 2 | **Slope** | 相邻参考点之间按斜率**线性插值**，超出两端钳位 |
+
+- 本机全部档案（default / CPU_TEMP / MAX / MIN / BOX_MAX）均为 **2 = Slope**
+- 实测（三次，均为 Slope 档案）：读数 68 落在参考点 30~70 之间时，占空比随读数连续变化，
+  排除了 Step 的保持行为 → 与 Slope 命名一致
+- ⚠️ 严格来说，"恰好是直线"由"命名 + 唯一替代算法是 Step"推出，未逐点标定验证曲线精确形状；
+  如需确认可做标定实验（用若干恒定占空比档案标定 duty→RPM，再在 t≈0.25 处测一条曲线反推占空比）
+
 ### 多源传感器合并规则（2026-09-29 实测）
 
 策略的 `arrSensor` 是数组，原版 UI 也是多选（`<select multiple="multiple">`）。实测确定**固件取读数最大的那个传感器**（与数组顺序无关）：

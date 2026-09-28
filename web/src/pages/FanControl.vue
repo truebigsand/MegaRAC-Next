@@ -279,7 +279,9 @@ function curveRatio(shape: CurveShape, t: number): number {
 
 /**
  * 生成「按参考点线性插值」的求值函数。
- * 实测固件即线性插值（Slope）：参考点之间按斜率取值，超出两端钳位。
+ * 依据：固件算法字段 iPolicyType 只有 Step(1) / Slope(2) 两种，本档案为 Slope；
+ * 实测占空比在参考点之间连续变化（非 Step 的保持行为），故按相邻点线性插值取值，
+ * 超出两端钳位。
  */
 function makeInterpolator(pairs: { ref: number; duty: number }[]): (x: number) => number {
   const seq = [...pairs].sort((a, b) => a.ref - b.ref);
