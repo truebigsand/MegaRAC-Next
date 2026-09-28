@@ -9,6 +9,7 @@ import * as echarts from 'echarts';
 import { bmcGet, bmcSend } from '../api';
 import type { FanProfile, FanPolicy, Sensor } from '../types';
 import { useIsMobile } from '../useMediaQuery';
+import { useChartAutoResize } from '../useChartAutoResize';
 
 const isMobile = useIsMobile();
 
@@ -514,11 +515,12 @@ function onTabSelect(name: string) {
   }
 }
 
+useChartAutoResize(chartEl, () => chart);
+
 onMounted(() => {
   chart = echarts.init(chartEl.value!);
   refresh();
   timer = setInterval(refresh, 5000);
-  window.addEventListener('resize', () => chart?.resize());
 });
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);

@@ -4,6 +4,7 @@ import { NCard, NSelect, NSpace, NSpin, NEmpty } from 'naive-ui';
 import * as echarts from 'echarts';
 import { localGet } from '../api';
 import { useIsMobile } from '../useMediaQuery';
+import { useChartAutoResize } from '../useChartAutoResize';
 
 const isMobile = useIsMobile();
 
@@ -60,7 +61,18 @@ async function refresh() {
         tooltip: { trigger: 'axis' },
         // 窄屏图例单行可翻页并预留空间，避免多行图例压住曲线
         legend: isMobile.value
-          ? { type: 'scroll', top: 0, textStyle: { fontSize: 10 }, itemGap: 8, itemWidth: 12, itemHeight: 8, pageIconSize: 10 }
+          ? {
+              type: 'scroll',
+              top: 0,
+              textStyle: { color: '#bbb', fontSize: 10 },
+              itemGap: 8,
+              itemWidth: 12,
+              itemHeight: 8,
+              pageIconSize: 10,
+              pageIconColor: '#bbb',
+              pageIconInactiveColor: '#555',
+              pageTextStyle: { color: '#bbb' },
+            }
           : { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
         grid: { left: isMobile.value ? 48 : 60, right: 20, top: isMobile.value ? 42 : 36, bottom: 40 },
         xAxis: { type: 'time', axisLabel: { color: '#888', hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
@@ -80,11 +92,12 @@ watch([picked, windowMinutes], () => {
   refresh();
 });
 
+useChartAutoResize(chartEl, () => chart);
+
 onMounted(() => {
   chart = echarts.init(chartEl.value!);
   refresh();
   timer = setInterval(refresh, 60_000);
-  window.addEventListener('resize', () => chart?.resize());
 });
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);

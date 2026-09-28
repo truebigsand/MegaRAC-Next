@@ -5,6 +5,7 @@ import * as echarts from 'echarts';
 import { bmcGet } from '../api';
 import type { ChassisStatus, FirmwareInfo, Sensor, Uptime } from '../types';
 import { useIsMobile } from '../useMediaQuery';
+import { useChartAutoResize } from '../useChartAutoResize';
 
 const isMobile = useIsMobile();
 
@@ -54,7 +55,7 @@ function lineOption(map: Map<string, { t: number; v: number }[]>, yName: string)
     animation: false,
     tooltip: { trigger: 'axis' },
     legend: isMobile.value
-      ? { top: 0, textStyle: { fontSize: 10 }, itemGap: 6, itemWidth: 12, itemHeight: 8 }
+      ? { top: 0, textStyle: { color: '#bbb', fontSize: 10 }, itemGap: 6, itemWidth: 12, itemHeight: 8 }
       : { top: 0, textStyle: { color: '#aaa', fontSize: 11 } },
     grid: {
       left: 44,
@@ -110,6 +111,9 @@ function sensorValue(name: string): string {
   return `${s.reading}${unit === 'deg_c' ? '°C' : unit === 'rpm' ? ' RPM' : ''}`;
 }
 
+useChartAutoResize(tempChartEl, () => tempChart);
+useChartAutoResize(fanChartEl, () => fanChart);
+
 onMounted(async () => {
   tempChart = echarts.init(tempChartEl.value!);
   fanChart = echarts.init(fanChartEl.value!);
@@ -121,17 +125,10 @@ onMounted(async () => {
   }
   await refresh();
   timer = setInterval(refresh, 3000);
-  window.addEventListener('resize', onResize);
 });
-
-function onResize() {
-  tempChart?.resize();
-  fanChart?.resize();
-}
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);
-  window.removeEventListener('resize', onResize);
   tempChart?.dispose();
   fanChart?.dispose();
 });
