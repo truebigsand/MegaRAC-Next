@@ -370,7 +370,7 @@ const curveForm = ref<CurveForm>({
   y1: 100,
 });
 
-/** 曲线编辑器的表单参数；同一档案再次打开时沿用上次用过的值 */
+/** 曲线编辑器的表单参数（每次打开都由当前档案推导，不留隐藏状态） */
 interface CurveForm {
   shape: CurveShape;
   allocate: AllocMode;
@@ -380,27 +380,12 @@ interface CurveForm {
   y0: number;
   y1: number;
 }
-/** 记住每个档案最近一次用过的参数（页面会话内） */
-const curveFormMemory = new Map<string, CurveForm>();
-
-function rememberCurveForm() {
-  const name = editing.value?.strName;
-  if (name) curveFormMemory.set(name, { ...curveForm.value });
-}
 
 function openCurveEditor() {
   const pol0 = pol.value;
   if (!pol0) return;
 
-  // 同一档案：沿用上次的参数（含占空比范围），不再每次重置
-  const remembered = curveFormMemory.get(editing.value?.strName ?? '');
-  if (remembered) {
-    curveForm.value = { ...remembered };
-    showCurveEditor.value = true;
-    return;
-  }
-
-  // 换档案/首次打开：读数与占空比范围都从当前档案推导
+  // 读数范围与占空比范围都取自当前档案的现有值
   const refs = pol0.arrRef.filter((r) => Number.isFinite(r));
   const duties = pol0.arrDuty.filter((d) => Number.isFinite(d));
   const dts = isDtsSource(pol0);
@@ -453,7 +438,6 @@ function initPreview() {
 }
 
 function disposePreview() {
-  rememberCurveForm();
   previewChart?.dispose();
   previewChart = null;
 }
@@ -527,7 +511,6 @@ function applyCurve() {
   p.arrDuty = s.duties;
   normalizeOrder(p);
   markDirty();
-  rememberCurveForm();
   showCurveEditor.value = false;
   message.success(`已填充 ${s.refs.length} 个数据点，确认后点「保存到 BMC」写入`);
 }
