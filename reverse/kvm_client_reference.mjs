@@ -1,5 +1,9 @@
 // KVM 客户端参考实现（2026-09-29 实测跑通，成功收到视频流）
 //
+// ⚠️ 已被取代：最终实现把握手与**整帧重组**都放在服务端（见 server/src/kvm.ts 与
+// docs/API.md 第 7 节），浏览器只收完整帧。本文件保留为「协议怎么走通」的最小参考，
+// 不再代表当前架构；其中 value_added 的教训（缺 CONNECTION_COMPLETE 头会 INVALID_SESSION）依然有效。
+//
 // 运行环境：BMC 同源的页面上下文（浏览器），可整段丢进 Playwright 的 page.evaluate。
 // 之所以放浏览器：wss://<bmc>/kvm 用自签证书，Node 原生 WebSocket 会因证书校验失败（1006）。
 // 移植到 Node 需用支持 rejectUnauthorized:false 的 WS 库（如 ws）或手写 TLS 升级。

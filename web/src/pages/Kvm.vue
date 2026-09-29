@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, computed } from 'vue';
 import {
-  NAlert, NButton, NCard, NSelect, NSpace, NStatistic, NTag, NText, useMessage,
+  NAlert, NButton, NCard, NPopconfirm, NSelect, NSpace, NStatistic, NTag, NText,
+  useMessage,
 } from 'naive-ui';
+import { bmcSend } from '../api';
 import { KvmClient, type KvmState, type VideoFrame } from '../kvm/client';
 import { HID_CODES, MODIFIER_CODES, mouseButtons } from '../kvm/keymap';
 
@@ -17,7 +19,9 @@ const height = ref(0);
 const frames = ref(0);
 const fps = ref(0);
 const mouseMode = ref<'absolute' | 'relative'>('absolute');
-const scaling = ref<'fit' | 'actual'>('fit');
+/** 缩放：fit = 适应宽度；其余为百分比 */
+const scaling = ref<'fit' | '50' | '75' | '100' | '125' | '150'>('fit');
+const powerBusy = ref(false);
 
 let client: KvmClient | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
@@ -107,6 +111,70 @@ function disconnect() {
 
 function refresh() {
   client?.refresh();
+}
+
+/** 截图：把当前画布存成 PNG */
+function captureScreen() {
+  const canvas = canvasEl.value;
+  if (!canvas || frames.value === 0) {
+    message.warning('还没有收到画面，无法截图');
+    return;
+  }
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `kvm-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+    message.success('已保存截图');
+  }, 'image/png');
+}
+
+/** 全屏显示画面区域（按 Esc 退出） */
+function toggleFullscreen() {
+  const el = wrapEl.value;
+  if (!el) return;
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else void el.requestFullscreen();
+}
+
+/**
+ * 一键发送特殊键。
+ * 浏览器里按不出 Ctrl+Alt+Del（会被操作系统截走），Win 键同理，
+ * 所以这几个键必须做成按钮从 KVM 侧发出去。
+ */
+async function sendSpecial(name: 'cad' | 'win' | 'prtscn' | 'context') {
+  if (!client || state.value !== 'streaming') {
+    message.warning('连接未就绪');
+    return;
+  }
+  const map: Record<typeof name, { modifiers: number; keys: number[]; label: string }> = {
+    // Delete = 0x4c；Ctrl+Alt 作为修饰键位掩码
+    cad: { modifiers: 0x01 | 0x04, keys: [0x4c], label: 'Ctrl+Alt+Del' },
+    win: { modifiers: 0x08, keys: [], label: 'Win 键' },
+    prtscn: { modifiers: 0, keys: [0x46], label: 'PrintScreen' },
+    context: { modifiers: 0, keys: [0x65], label: '右键菜单键' },
+  };
+  const k = map[name];
+  client.sendKeyboard(k.modifiers, k.keys);
+  await new Promise((r) => setTimeout(r, 120));
+  client.sendKeyboard(0, []);
+  message.success(`已发送 ${k.label}`);
+}
+
+/** KVM 页内的电源控制（与电源页同一套 API） */
+async function power(cmd: number, label: string) {
+  powerBusy.value = true;
+  try {
+    await bmcSend('POST', 'actions/power', { power_command: cmd });
+    message.success(`已发送：${label}`);
+  } catch (e) {
+    message.error((e as Error).message);
+  } finally {
+    powerBusy.value = false;
+  }
 }
 
 // ---------- 输入 ----------
@@ -245,7 +313,11 @@ onBeforeUnmount(() => {
             style="width: 108px"
             :options="[
               { label: '适应宽度', value: 'fit' },
-              { label: '原始大小', value: 'actual' },
+              { label: '50%', value: '50' },
+              { label: '75%', value: '75' },
+              { label: '100%', value: '100' },
+              { label: '125%', value: '125' },
+              { label: '150%', value: '150' },
             ]"
           />
           <n-select
@@ -258,6 +330,8 @@ onBeforeUnmount(() => {
             ]"
           />
           <n-button size="small" @click="refresh">刷新画面</n-button>
+          <n-button size="small" @click="captureScreen">截图</n-button>
+          <n-button size="small" @click="toggleFullscreen">全屏</n-button>
           <n-button
             v-if="state === 'idle' || state === 'closed' || state === 'failed'"
             size="small"
@@ -286,11 +360,50 @@ onBeforeUnmount(() => {
           @touchend="onTouch"
           @contextmenu.prevent
         >
-          <canvas ref="canvasEl" class="kvm-canvas" :class="scaling === 'fit' ? 'kvm-fit' : 'kvm-actual'" />
+          <canvas
+            ref="canvasEl"
+            class="kvm-canvas"
+            :style="scaling === 'fit' ? undefined : { width: (width * Number(scaling)) / 100 + 'px', height: 'auto' }"
+            :class="scaling === 'fit' ? 'kvm-fit' : 'kvm-actual'"
+          />
           <div v-if="fps === 0 && state === 'streaming'" class="kvm-overlay">
             已连接，等待主机画面…
           </div>
         </div>
+
+        <n-space align="center" :size="8" :wrap="true">
+          <n-text depth="3" style="font-size: 13px">特殊键：</n-text>
+          <n-button size="tiny" :disabled="state !== 'streaming'" @click="sendSpecial('cad')">
+            Ctrl+Alt+Del
+          </n-button>
+          <n-button size="tiny" :disabled="state !== 'streaming'" @click="sendSpecial('win')">Win</n-button>
+          <n-button size="tiny" :disabled="state !== 'streaming'" @click="sendSpecial('prtscn')">PrintScreen</n-button>
+          <n-button size="tiny" :disabled="state !== 'streaming'" @click="sendSpecial('context')">菜单键</n-button>
+        </n-space>
+
+        <n-space align="center" :size="8" :wrap="true">
+          <n-text depth="3" style="font-size: 13px">电源：</n-text>
+          <n-popconfirm @positive-click="power(1, '开启电源')">
+            <template #trigger><n-button size="tiny" :loading="powerBusy">开启</n-button></template>
+            确认开启主机电源？
+          </n-popconfirm>
+          <n-popconfirm @positive-click="power(5, 'ACPI 关闭')">
+            <template #trigger><n-button size="tiny" :loading="powerBusy">软关机</n-button></template>
+            向操作系统发送软关机（ACPI）？
+          </n-popconfirm>
+          <n-popconfirm @positive-click="power(3, '硬重启')">
+            <template #trigger><n-button size="tiny" type="warning" :loading="powerBusy">硬重启</n-button></template>
+            硬重启等效按 reset 键，未保存的数据会丢失，确认执行？
+          </n-popconfirm>
+          <n-popconfirm @positive-click="power(2, '电源循环')">
+            <template #trigger><n-button size="tiny" type="warning" :loading="powerBusy">电源循环</n-button></template>
+            断电再上电。适用于「BMC 显示在线但系统无响应」，确认执行？
+          </n-popconfirm>
+          <n-popconfirm @positive-click="power(0, '关闭电源')">
+            <template #trigger><n-button size="tiny" type="error" :loading="powerBusy">强制断电</n-button></template>
+            立即切断主机电源（等同拔电），确认执行？
+          </n-popconfirm>
+        </n-space>
 
         <n-text depth="3" style="font-size: 13px">
           键盘已全局接管（F5 / Ctrl+R / Ctrl+W 等浏览器快捷键仍保留）。主机画面静止时不推送新帧，此时帧率为 0 属正常。
@@ -329,6 +442,7 @@ onBeforeUnmount(() => {
 }
 .kvm-actual {
   flex: none;
+  max-width: none;
 }
 .kvm-overlay {
   position: absolute;

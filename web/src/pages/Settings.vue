@@ -52,6 +52,15 @@ const fru = ref<FruDevice[]>([]);
 const users = ref<BmcUser[]>([]);
 const network = ref<NetIf[]>([]);
 const services = ref<BmcService[]>([]);
+/**
+ * BMC 自报的 active_session 是**假的**（实测冷重置后立刻显示 web 130/148、kvm 128/130，
+ * 而真实会话列表是 0 条）。真正有意义的是 /settings/service-sessions 的条数，
+ * 所以这里单独取一份按 session_type 统计的真实值。
+ */
+const realSessions = ref<Record<string, number>>({});
+const SESSION_TYPE_NAME: Record<number, string> = {
+  1: 'web', 2: 'kvm', 3: 'cd-media', 4: 'hd-media', 5: 'kvm', 6: 'ssh',
+};
 const datetime = ref<{ primary_ntp: string; secondary_ntp: string; ntp_auto_date: number; timezone: string } | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -104,10 +113,30 @@ const serviceColumns: DataTableColumns<BmcService> = [
   },
   { title: 'HTTP 端口', key: 'non_secure_port', width: 100 },
   { title: 'HTTPS 端口', key: 'secure_port', width: 100 },
-  { title: '会话 上限/当前', key: 'sess', render: (s) => `${s.active_session} / ${s.maximum_sessions}` },
+  {
+    title: '会话 当前/上限',
+    key: 'sess',
+    render: (s) =>
+      `${realSessions.value[s.service_name] ?? '—'} / ${s.maximum_sessions}`,
+  },
 ];
 
+async function loadRealSessions() {
+  try {
+    const list = await bmcGet<{ session_type?: number }[]>('settings/service-sessions');
+    const byType: Record<string, number> = {};
+    for (const e of Array.isArray(list) ? list : []) {
+      const name = SESSION_TYPE_NAME[e.session_type ?? -1];
+      if (name) byType[name] = (byType[name] ?? 0) + 1;
+    }
+    realSessions.value = byType;
+  } catch {
+    realSessions.value = {}; // 取不到就显示 —，不显示 BMC 那个假计数器
+  }
+}
+
 async function refresh() {
+  void loadRealSessions(); // 会话真实条数单独取，取不到不影响其它页签
   try {
     const [fruData, usersData, netData, svcData, dtData] = await Promise.all([
       bmcGet<FruDevice[]>('fru'),
@@ -204,6 +233,10 @@ onBeforeUnmount(() => {
 
         <n-tab-pane name="services" tab="服务">
           <n-data-table :columns="serviceColumns" :data="services" size="small" :bordered="false" :scroll-x="isMobile ? 520 : undefined" />
+          <p class="tip">
+            「会话 当前」取的是 BMC 真实会话列表的条数。BMC 自身 API 里的
+            <code>active_session</code> 计数器实测是错的（重置后仍显示接近上限），故不使用。
+          </p>
         </n-tab-pane>
       </n-tabs>
     </n-card>

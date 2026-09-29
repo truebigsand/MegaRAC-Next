@@ -335,8 +335,8 @@ CMD_KVM_MEDIA_INFO(38) / ACTIVE_CLIENTS(39) …
    ⚠️ **我们自建连接的尝试均得到 status=0（INVALID_SESSION）**：包结构已被正确解析（服务器有回应），
    但会话关联未被接受。已排除：token 来源（h5viewercfg 与 /api/kvm/token 两者都试）、同源/同会话
    （在同一页面会话内登录→取 token→建 WS）、OEM 握手（本固件 OEM 钩子全是桩 `isOEMCommand(){return !1}`）、
-   client_ip/username/mac 取值。**待办：抓取原版 viewer 的握手原始字节做逐字节比对**
-   （可用 Playwright 监听 WebSocket framesent；注意 `window.open` 同名窗口会复用，需先关掉旧 viewer）
+   client_ip/username/mac 取值。**已解决**：Playwright 抓到原版握手原始字节（`reverse/kvm_capture_reference.txt`）
+   逐字节核对后定位到缺 `CMD_CONNECTION_COMPLETE_PKT` 头（见上一节）
 4. 校验通过后的流程（来自 viewer.min.js）：服务器发 `CMD_MEDIA_LICENSE_STATUS(53)` →
    客户端回 `CMD_DISPLAY_LOCK_SET(51,[2])`、`CMD_GET_USER_MACRO(40)`、
    **`CMD_GET_WEB_TOKEN(21) len=35 payload=session`**（把 web 会话串注册给 KVM 服务，实测长度 35 与 session 串长度一致）
