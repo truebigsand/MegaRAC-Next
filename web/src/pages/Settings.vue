@@ -80,9 +80,15 @@ async function submitWrite(
 const userDialog = ref(false);
 const userForm = ref({ userid: 0, name: '', password: '', privilege: 'user', kvm: 1, vmedia: 1 });
 const userIsNew = ref(false);
+/**
+ * 写回时要用 BMC 自己给的那个对象整体回写（只改我们动的几个字段）。
+ * 实测只发 name/privilege/password 这样的最小体会 500——它期望模型字段齐全。
+ */
+const userBase = ref<BmcUser | null>(null);
 
 function openUserEdit(u: BmcUser) {
   userIsNew.value = false;
+  userBase.value = { ...u };
   userForm.value = {
     userid: u.userid,
     name: u.name,
@@ -95,8 +101,18 @@ function openUserEdit(u: BmcUser) {
 }
 
 function openUserCreate() {
+  // BMC 的用户是**固定槽位**（id 1..N）：新建 = 往一个空槽 PUT，
+  // 而不是 POST 集合（实测 POST /api/settings/users 返回 404）
+  const used = new Set(users.value.filter((u) => u.name).map((u) => u.userid));
+  const free = users.value.map((u) => u.userid).filter((id) => !used.has(id)).sort((a, b) => a - b)[0];
+  if (free === undefined) {
+    message.warning('没有空闲用户槽位');
+    return;
+  }
   userIsNew.value = true;
-  userForm.value = { userid: 0, name: '', password: '', privilege: 'user', kvm: 1, vmedia: 1 };
+  const slot = users.value.find((u) => u.userid === free);
+  userBase.value = slot ? { ...slot } : null;
+  userForm.value = { userid: free, name: '', password: '', privilege: 'user', kvm: 1, vmedia: 1 };
   userDialog.value = true;
 }
 
@@ -110,22 +126,44 @@ async function saveUser() {
     message.warning('BMC 要求密码至少 8 位');
     return;
   }
+  const base = userBase.value ?? {};
+  const priv = f.privilege;
+  // 字段与取值照抄 BMC 自己的 users 保存逻辑（viewer 的 users_edit_item.save）：
+  // UserOperation 0=新增 1=修改；accessByChannel / privilegeByChannel 按通道拼串。
   const body: Record<string, unknown> = {
+    ...base,
     name: f.name,
-    privilege: f.privilege,
-    kvm: f.kvm,
-    vmedia: f.vmedia,
-    access: 1,
+    UserOperation: userIsNew.value ? 0 : 1,
+    password: f.password,
+    confirm_password: f.password,
+    password_size: f.password.length,
+    privilege: priv,
+    accessByChannel: '(1,1)',
+    privilegeByChannel: `(${priv},${priv})`,
+    snmp_access: (base.snmp_access as string) ?? '',
+    snmp_authentication_protocol: (base.snmp_authentication_protocol as string) ?? '',
+    snmp_privacy_protocol: (base.snmp_privacy_protocol as string) ?? '',
+    email_id: (base.email_id as string) ?? '',
+    email_format: (base.email_format as string) ?? 'ami_format',
+    ssh_key: base.ssh_key === 'Not Available' ? '' : ((base.ssh_key as string) ?? ''),
   };
-  if (f.password) body.password = f.password;
-  const ok = userIsNew.value
-    ? await submitWrite('新建用户', 'settings/users', body, 'POST')
-    : await submitWrite('保存用户', `settings/users/${f.userid}`, body, 'PUT');
+  const ok = await submitWrite(
+    userIsNew.value ? '新建用户' : '保存用户',
+    `settings/users/${base.id ?? f.userid}`,
+    body,
+    'PUT',
+  );
   if (ok) userDialog.value = false;
 }
 
 async function deleteUser(u: BmcUser) {
-  await submitWrite('删除用户', `settings/users/${u.userid}`, undefined, 'DELETE');
+  // 照抄 BMC 的删除实现：DELETE /api/settings/users/<id>，body 为 {snmp_status, id}
+  await submitWrite(
+    '删除用户',
+    `settings/users/${u.id ?? u.userid}`,
+    { snmp_status: u.snmp ?? 0, id: u.id ?? u.userid },
+    'DELETE',
+  );
 }
 
 // ---------- 服务 ----------
@@ -254,6 +292,8 @@ interface BmcUser {
   kvm: number;
   vmedia: number;
   ssh_key: string;
+  /** BMC 返回的其它字段（channel/email_format/creation_time 等），写回时要原样带回 */
+  [k: string]: unknown;
 }
 interface NetIf {
   id: number;
