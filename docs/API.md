@@ -348,7 +348,17 @@ CMD_KVM_MEDIA_INFO(38) / ACTIVE_CLIENTS(39) …
 
 ### 自建 KVM 客户端（本项目已实现并真机验证，2026-09-29）
 
-**架构**：服务端（Node）承担握手与字节中继，浏览器只做「重组帧 + 解码 + 渲染 + 输入」。
+**架构（2026-09-29 定稿）**：服务端承担握手、**整帧重组**与键鼠编码；浏览器只做「解码 + 渲染 + 输入事件翻译」。
+- 服务端把视频流按帧重组好再下发：文本帧 = `{type:'frame',header}`，紧随一个二进制帧 = 该帧压缩数据
+  （另有 `{type:'state'|'reset'|'blank'|'power'}`）。
+  **为什么不由浏览器重组**：视频帧是差分的（skip 码沿用上一帧像素），浏览器刷新/重连后是**从半途接入**的，
+  自己解析裸字节流时帧边界永远对不齐 → 一帧都收不齐（实测踩过）。
+- 浏览器重连/刷新时**复用**未断的 BMC 会话（`KvmSession` 生命周期不绑定浏览器 WS，断开后保留 60s），
+  复用瞬间发 `CMD_PAUSE_REDIRECTION(4)` → 150ms → `CMD_RESUME_REDIRECTION(6)` 索取**整屏完整帧**
+  （原版注释：resume 会得到 full screen video buffer；`CMD_REFRESH_VIDEO_SCREEN(5)` 只补变化区，不够用），
+  并让浏览器重建解码缓冲。实测重连后画面与重连前**逐像素一致**。
+- 用户点「断开」时浏览器先发 `{kind:'disconnect'}`，服务端立即关闭 BMC 会话（不做 60s 保留）——
+  否则下次连接会复用一个可能是「只读从属」的旧会话。
 - 服务端用 `ws` 库以 `rejectUnauthorized:false` 连 `wss://<bmc>/kvm`（自签证书），
   **必须显式带 `Origin: https://<bmc>`**（缺省 Node 不发 Origin 会被拒）
 - 浏览器 `<->` 代理的 `/api/kvm`：二进制帧 = IVTP 协议字节，文本帧 = JSON 状态/键鼠指令
@@ -388,6 +398,10 @@ worker 回 `{cmd:'draw', ibuf}` 时 `putImageData`。
   `CMD_KVM_SHARING(32)` 与 `CMD_SET_NEXT_MASTER(50)`，status = `REQ_MASTER(1) | (ALLOWED<<8)`、payload 回带申请方信息；
   主控已消失则由 BMC 超时后把主控权交给申请方。
 - 本项目：自身为主控时**自动同意**他人的完全控制申请（同机同用户的其它标签页/原版 viewer）。
+- ⚠️ **不能把 `RESPONSE_TO_SLAVE` 一律当授权**：实测会收到 `resp-to-slave/master-terminated`（旧主控退出），
+  那不是授权。只有 `RESPONSE_TO_SLAVE + high=ALLOWED(0)` 或 `SWITCH_MASTER` 才算拿到完全控制。
+  误判会停在「画面正常但键鼠无效」且不再申请（踩过）。未获授权时本项目持续每 4s 重发申请，
+  超过 12s 仍未获批就主动重连争取（最多 3 次）。
 - **重连竞态**：上一个 KVM 连接断开后 BMC 需要数秒才释放主控。
   新连接若抢在这之前建立就会拿到序号 >0 变成从属。
   做法：替换旧连接时先发 `CMD_STOP_SESSION_IMMEDIATE(8)` 并**等旧 socket 真正关闭**再建新连接。
@@ -418,28 +432,50 @@ USB 头 32B: "IUSB    "(8) | major u8=1 | minor u8=0 | hdrSize u8=32 | 校验和
 - 鼠标：报文正确送达（服务端日志可见 btn/坐标/滚轮），但 **ESXi DCUI 本身不支持鼠标**，
   故无法在该画面观察指针移动；报文结构已与原版逐字节核对一致
 
-### ⚠️⚠️ web 会话表被占满会让 KVM 静默降级（2026-09-29 踩坑）
+### ⚠️⚠️ web 会话表被占满会让 KVM 静默降级 + 救场流程（2026-09-29 踩坑）
 
-BMC 的 web 会话上限只有 **148**（`/api/settings/services` 的 `maximum_sessions`），
-且**脚本泄漏会话不会自愈到零**：每个登录都占一格，不注销就留着（超时 1800s 后才回收）。
+**两个不同的数字，别搞混**（实测澄清）：
+- `/api/settings/services` 里的 `active_session` 是**虚的**：BMC 冷重置后立即显示
+  `web 130/148 · kvm 128/130 · cd/hd-media 128/129`，而 `/api/settings/service-sessions` 实际只有 **0 条**。
+  它不参与登录判定，别拿它当依据。
+- **真正卡登录的是会话列表长度**（上限 `maximum_sessions`，web = 148）。
+  列表满了新登录直接 401：`{"error":"Maximum number of sessions already in use","code":15000}`。
 
-表满之后的表现**极具误导性**：
-- 新登录被拒：`{"error":"Maximum number of sessions already in use","code":15000}`
+**表满之后的表现极具误导性**：
 - `/kvm` 的 WebSocket 升级**看起来成功**：先回 `HTTP/1.1 101 Switching Protocols`，
-  紧接着在同一连接里又发一个 **完整的 `HTTP/1.1 200 OK` 响应**（`Content-Encoding: gzip`、
-  `X-Frame-Options`、`Cache-Control: no-store...`、CSP 等，是 web 服务的回退页面）。
-  客户端按 WS 帧解析这些 ASCII 字节就会报
-  `Invalid WebSocket frame: RSV1 must be clear`（RSV1 位其实是正文里的随机位），
-  极易误判成 permessage-deflate 协商问题——**实测四种 deflate 报价全都报同样的错**，
-  因为根本不是扩展协商的事。
+  紧接着在同一连接里又发一个**完整的 `HTTP/1.1 200 OK` 响应**（`Content-Encoding: gzip`、
+  `X-Frame-Options`、`Cache-Control: no-store...`、CSP、`Server: lighttpd`、`Connection: close`，
+  正文为空）——这是 lighttpd 拿不到后端时的回退页面。客户端按 WS 帧解析这些 ASCII 字节就会报
+  `Invalid WebSocket frame: RSV1 must be clear`（RSV1 其实是正文里的随机位），
+  极易误判成 permessage-deflate 协商问题——**实测四种 deflate 报价全都报同样的错**，因为根本不是扩展的事。
+- 注意：**表满不是 KVM 挂掉的唯一原因**。也遇到过"会话列表为 0 但 KVM 后端仍不服务"的情况，
+  即 KVM 守护进程本身卡死，需要重启。
 
-排查顺序建议：先 `/api/settings/service-sessions` 看 web 会话数，
-再确认 `/kvm` 升级后第一个字节是 `0x48`('H'，HTTP 回退页) 还是二进制帧头。
-恢复：清掉孤儿会话（本项目 `reverse/clear_bmc_sessions.mjs`）或等 30 分钟超时回收。
+**排查顺序**：先 `GET /api/settings/service-sessions` 看**列表条数**（不是计数器）；
+再看 `/kvm` 升级后第一个字节是 `0x48`（'H'，HTTP 回退页）还是二进制帧头。
 
-**本项目已做的加固**：`reverse/` 下的探针脚本用完即注销；代理侧一个浏览器会话只持一条 BMC 会话。
+**救场（按代价从低到高）**：
+1. **清僵尸会话**：本项目代理提供 `POST /api/maintenance/clear-bmc-sessions`
+   （删掉除本代理以外所有会话，只动会话记录不动配置）。也可以在能登录时用 UI。
+2. **等超时**：web 服务 `time_out=1800`，孤儿会话约 30 分钟后被回收（实测有效，但泄漏速度快于回收就没用）。
+3. **重启 KVM 服务**：`PUT /api/settings/services/<id>` 改 `state`（需登录，表满时走不通）。
+4. **BMC 冷重置（最后手段，实测有效且彻底）**：
+   web 通道已被自己锁死时只能走 IPMI——**IPMI 不走 web 会话表**：
+   ```python
+   from pyghmi.ipmi import command
+   command.Command(bmc='192.168.0.200', userid='admin', password='…').reset_bmc()
+   ```
+   实测：BMC 约 2.5 分钟不可用后恢复，会话列表归零、**卡死的 KVM 守护进程也随之恢复**（视频流立刻正常）。
+   ⚠️ BMC 冷重置**不影响主机与其上的虚拟机**，只中断 BMC 自身的 web/KVM/SOL 服务。
+   本项目脚本：`reverse/ipmi_reset_bmc.py`（重置）、`reverse/ipmi_info.py`（只读状态/SEL）、`reverse/wait_bmc_up.py`（等待恢复）。
 
-### ⚠️ 会话计数器虚高（重要运维发现，2026-09-29）
+**本项目已做的防泄漏加固**：
+- 代理侧：同一 BMC 账号**只持一条会话**（按用户名池化，`server/src/sessions.ts`），
+  N 个浏览器标签 = 1 条 BMC 会话；实测同账号再登录会让先前那条失效（旧会话请求返回
+  `Invalid Authentication`），所以"每标签各登一次"本来也互相踢。
+- 逆向探针脚本：用完即注销（`reverse/*.mjs` 文件头有醒目提示）；
+  早期正是这些脚本泄漏的 ~148 条会话把表占满的。
+### 会话计数器的历史记录（2026-09-29，已被上面一节取代）
 `/api/settings/services` 的 `active_session` 与实际会话表**不一致**：
 
 | 服务 | 计数器 | `service-sessions` 实际列表 |

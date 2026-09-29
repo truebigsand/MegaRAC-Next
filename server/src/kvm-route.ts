@@ -67,68 +67,76 @@ export async function registerKvm(app: FastifyInstance) {
     const sendJson = (obj: unknown) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
     };
+    const sink = {
+      send: (obj: unknown) => sendJson(obj),
+      sendBinary: (buf: Buffer) => {
+        if (ws.readyState === ws.OPEN) ws.send(buf, { binary: true });
+      },
+    };
 
     let mouseMode: MouseMode = 'absolute';
     let last: { x: number; y: number } | undefined;
     let hidSent = 0;
+    let session: KvmSession | null = null;
+    /** 会话是否已被显式断开（浏览器点「断开」），此时不再复用 */
+    let userDisconnected = false;
+
+    /** 建一条新会话并接管；失败时重试若干次（BMC 握手偶发失败） */
+    const startSession = async (): Promise<KvmSession | null> => {
+      const s = new KvmSession(bmc);
+      s.on('state', (_state: string, detail: string) =>
+        app.log.info(`KVM 状态: ${_state}${detail ? ' — ' + detail : ''}`),
+      );
+      // 会话为了争取主控会主动断开 → 立刻重建（见 KvmSession.requestFullAccess）
+      s.on('closed', () => {
+        if (s.restartRequested && !userDisconnected && ws.readyState === ws.OPEN) {
+          app.log.info('为争取主控重建 KVM 会话');
+          void startSession().then((next) => {
+            if (next) session = next;
+          });
+        }
+      });
+      live.set(token, s);
+      for (let i = 1; i <= 3; i++) {
+        try {
+          await s.start();
+          await new Promise((r) => setTimeout(r, 1200)); // 握手错误常是异步 ws error
+          if (s.usable) {
+            s.attach(sink);
+            app.log.info(`KVM 会话已建立（BMC racsession_id=${bmc.sessionId}）`);
+            return s;
+          }
+        } catch (e) {
+          app.log.warn(`KVM 建连失败（第 ${i}/3 次）: ${(e as Error).message}`);
+        }
+        s.close();
+        if (i < 3) await new Promise((r) => setTimeout(r, 1200));
+      }
+      return null;
+    };
 
     // 已有还活着的 KVM 会话（浏览器刚刷新/重连）→ 直接复用，不再重新握手，
     // 避免 BMC 还没释放旧会话时把新连接判成「从属」（键鼠会失效）
     const existing = live.get(token);
-    let session: KvmSession;
     if (existing?.usable) {
       app.log.info('复用已有 KVM 会话（浏览器重连）');
       session = existing;
+      session.attach(sink);
     } else {
       if (existing) live.delete(token);
-      session = new KvmSession(bmc);
-      // 状态变化记一条日志（只在新建时挂，复用时不重复挂）
-      session.on('state', (_state, detail) =>
-        app.log.info(`KVM 状态: ${_state}${detail ? ' — ' + detail : ''}`),
-      );
-      live.set(token, session);
-      // BMC 握手偶发失败（例如 RSV1 帧异常），重试几次再放弃
-      const attempts = 3;
-      let lastErr = '';
-      let ok = false;
-      for (let i = 1; i <= attempts && !ok; i++) {
-        try {
-          await session.start();
-          // 握手错误往往是异步 ws error，等一拍再判断是否真的活着
-          await new Promise((r) => setTimeout(r, 1200));
-          if (session.usable) ok = true;
-          else lastErr = session.detail || '握手后立即断开';
-        } catch (e) {
-          lastErr = (e as Error).message;
-        }
-        if (!ok) {
-          app.log.warn(`KVM 建连失败（第 ${i}/${attempts} 次）: ${lastErr}`);
-          session.close();
-          if (i < attempts) {
-            await new Promise((r) => setTimeout(r, 1500));
-            session = new KvmSession(bmc);
-            live.set(token, session);
-          }
-        }
-      }
-      if (!ok) {
+      const created = await startSession();
+      if (!created) {
+        const detail = (live.get(token) as KvmSession | undefined)?.detail || 'KVM 连接失败';
+        sendJson({ type: 'state', state: 'failed', detail });
         live.delete(token);
-        sendJson({ type: 'state', state: 'failed', detail: lastErr || 'KVM 连接失败' });
-        session.close();
         ws.close();
         return;
       }
-      app.log.info(`KVM 会话已建立（BMC racsession_id=${bmc.sessionId}）`);
+      session = created;
     }
 
-    session.attach({
-      onData: (buf) => {
-        if (ws.readyState === ws.OPEN) ws.send(buf, { binary: true });
-      },
-      onState: (state, detail) => sendJson({ type: 'state', state, detail }),
-    });
-
     ws.on('message', (data: Buffer, isBinary: boolean) => {
+      if (!session) return;
       if (isBinary) {
         session.send(data); // 浏览器直接构造的 IVTP 包原样转发
         return;
@@ -148,6 +156,17 @@ export async function registerKvm(app: FastifyInstance) {
       try {
         msg = JSON.parse(data.toString('utf8'));
       } catch {
+        return;
+      }
+      if (msg.kind === 'refresh') {
+        session.refresh(); // 让 BMC 重发画面变化区
+        return;
+      }
+      if (msg.kind === 'disconnect') {
+        // 浏览器明确断开：直接关掉 BMC 会话，不做 60s 保留（下次连接要的是干净的主控）
+        userDisconnected = true;
+        live.delete(token);
+        session.close();
         return;
       }
       if (msg.kind === 'set-mouse-mode' && (msg.mode === 'absolute' || msg.mode === 'relative')) {
@@ -178,8 +197,12 @@ export async function registerKvm(app: FastifyInstance) {
     });
 
     // 浏览器断开：不立刻关 BMC 会话，留着等重连（见 KvmSession.graceMs 的说明）
-    ws.on('close', () => session.detach());
-    ws.on('error', () => session.detach());
+    ws.on('close', () => {
+      if (!userDisconnected) session?.detach();
+    });
+    ws.on('error', () => {
+      if (!userDisconnected) session?.detach();
+    });
   });
 
   app.addHook('onClose', async () => {

@@ -1,8 +1,11 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import { randomUUID } from 'node:crypto';
-import { BmcClient, BmcSessionExpiredError } from './bmc.js';
-import { createSession, dropSession, getSession, sessionCount, allSessions } from './sessions.js';
+import { BmcSessionExpiredError } from './bmc.js';
+import {
+  acquireClient, createSession, dropSession, getSession, hasSessionFor,
+  releaseClient, sessionCount, allSessions,
+} from './sessions.js';
 import { SqliteHistoryStore } from './history/sqlite.js';
 import { HistorySampler } from './history/sampler.js';
 import { registerKvm, closeAllKvm } from './kvm-route.js';
@@ -74,10 +77,12 @@ app.post('/api/auth/login', async (req, reply) => {
   if (!username || !password) {
     return reply.code(400).send({ error: '需要 username 与 password' });
   }
-  const client = new BmcClient(username, password);
+  // 同账号复用一个 BMC 会话（见 sessions.ts 的说明：BMC 会话表小且同账号互踢）
+  const client = acquireClient(username, password);
   try {
-    await client.login();
+    if (!client.loggedIn) await client.login();
   } catch (e) {
+    releaseClient(username);
     app.log.warn(`BMC 登录失败: ${(e as Error).message}`);
     return reply.code(401).send({ error: (e as Error).message });
   }
@@ -88,7 +93,9 @@ app.post('/api/auth/login', async (req, reply) => {
     sameSite: 'strict',
     path: '/',
   });
-  app.log.info(`浏览器会话建立 (BMC racsession_id=${client.sessionId})，当前会话数=${sessionCount()}`);
+  app.log.info(
+    `浏览器会话建立 (BMC racsession_id=${client.sessionId})，浏览器会话数=${sessionCount()}（BMC 侧共享 1 条）`,
+  );
   return { ok: true, username: client.username };
 });
 
@@ -96,8 +103,17 @@ app.post('/api/auth/logout', async (req, reply) => {
   const token = req.cookies[COOKIE_NAME];
   if (token) {
     const session = dropSession(token);
-    await session?.client.logout();
-    app.log.info(`会话注销 (BMC racsession_id=${session?.client.sessionId})，当前会话数=${sessionCount()}`);
+    if (session) {
+      // 只有该账号已无其它浏览器会话时才真正注销 BMC 会话，否则别人的页面会被踢下线
+      if (!hasSessionFor(session.client.username)) {
+        releaseClient(session.client.username);
+        await session.client.logout();
+      }
+      app.log.info(
+        `浏览器会话注销 (BMC racsession_id=${session.client.sessionId})，` +
+          `浏览器会话数=${sessionCount()}，BMC 侧仍在线=${hasSessionFor(session.client.username)}`,
+      );
+    }
   }
   reply.clearCookie(COOKIE_NAME, { path: '/' });
   return { ok: true };
@@ -169,6 +185,55 @@ app.delete('/bmc/*', (req, reply) => forwardWrite(req, reply, 'DELETE'));
 // ---------- 健康检查 ----------
 
 app.get('/api/health', async () => ({ ok: true, browserSessions: sessionCount() }));
+
+// ---------- BMC 会话维护 ----------
+
+/**
+ * 清理 BMC 上的**其它**会话（保留本代理正在用的那条）。
+ *
+ * 用途：该 BMC 的会话表只有 148 格，且实测脚本/多标签页很容易把它占满——
+ * 满了以后新登录直接被拒（`Maximum number of sessions already in use`），
+ * 连 KVM 的 WebSocket 升级都会被降级成一个 HTTP 回退响应。
+ * 这个端点让用户能在 UI 上一键把僵尸会话清掉，不必重启 BMC。
+ *
+ * 只删会话记录，不动任何配置。
+ */
+app.post('/api/maintenance/clear-bmc-sessions', async (req, reply) => {
+  const session = getSession(req.cookies[COOKIE_NAME]);
+  if (!session) return reply.code(401).send({ error: 'not_logged_in' });
+  const mine = session.client.sessionId;
+  // 一次取全部会话再按类型分组（实测带 service_type 查询参数会被忽略/返回空）
+  const res = await session.client.get('/api/settings/service-sessions');
+  const all = (Array.isArray(res.body) ? res.body : []) as {
+    session_id?: number;
+    id?: number;
+    session_type?: number;
+    user_name?: string;
+    client_ip?: string;
+  }[];
+  const typeName: Record<number, string> = {
+    1: 'web',
+    2: 'kvm',
+    5: 'kvm',
+    3: 'cd-media',
+    4: 'hd-media',
+    6: 'ssh',
+  };
+  const report: Record<string, { total: number; removed: number; failed: number }> = {};
+  const errors: number[] = [];
+  for (const e of all) {
+    const id = e.session_id ?? e.id;
+    const kind = typeName[e.session_type ?? -1] ?? `type${e.session_type ?? '?'}`;
+    const stat = (report[kind] ??= { total: 0, removed: 0, failed: 0 });
+    stat.total++;
+    if (id === undefined || id === mine) continue; // 别把自己踢下线
+    const del = await session.client.send('DELETE', `/api/settings/service-sessions/${id}`);
+    if (del.status === 200 || del.status === 204) stat.removed++;
+    else stat.failed++;
+  }
+  app.log.warn(`清理 BMC 会话：${JSON.stringify(report)}（保留本代理会话 id=${mine}）`);
+  return { ok: true, kept: mine, report };
+});
 
 // ---------- KVM ----------
 

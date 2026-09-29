@@ -39,13 +39,21 @@ npm run dev:web      # Vue3 开发服务器，监听 0.0.0.0:5173
 不复用原版 `viewer.min.js`，只复用 BMC 自带的 AST2100 解码 worker。结构：
 
 ```
-server/src/kvm.ts       与 BMC 的 /kvm 建连 + IVTP 握手 + 字节中继
-server/src/kvm-route.ts /api/kvm（WebSocket 中继）、/api/kvm/decoder.js（解码 worker 代理）
-server/src/hid.ts       键鼠 HID 报文构造（与原版逐字节一致）
-web/src/kvm/client.ts   协议流重组 → 帧重组 → 解码 worker → ImageData
-web/src/kvm/keymap.ts   KeyboardEvent.code → USB HID 键码
-web/src/pages/Kvm.vue   canvas 渲染 + 全局键鼠/触屏输入
+server/src/kvm.ts         与 BMC 的 /kvm 建连 + IVTP 握手 + 帧重组 + 主从协商
+server/src/kvm-route.ts   /api/kvm（WebSocket 中继）、/api/kvm/decoder.js（解码 worker 代理）
+server/src/hid.ts         键鼠 HID 报文构造（与原版逐字节一致）
+web/src/kvm/client.ts     收整帧 → 解码 worker → ImageData
+web/src/kvm/keymap.ts     KeyboardEvent.code → USB HID 键码
+web/src/pages/Kvm.vue     canvas 渲染 + 全局键鼠/触屏输入
 ```
+
+两个关键设计：
+- **帧在服务端重组**。视频帧是差分的（AST2100 的 skip 码沿用上一帧像素），
+  浏览器刷新/重连后是从半途接入的——让它自己解析裸字节流会对不齐帧边界，一帧都收不齐（实测）。
+  服务端重组后只下发完整帧，浏览器天然从下一个完整帧开始。
+- **重连复用 BMC 会话**。BMC 释放 KVM 主控要好几秒，断开即关、重连重握手会拿到「从属会话」
+  （画面正常但键鼠全无效）。所以会话生命周期不绑定浏览器 WS：断开后保留 60s 供复用，
+  复用瞬间用「暂停→恢复」向 BMC 索取整屏完整帧；用户点「断开」则立即释放。
 
 为什么要服务端中继：BMC 用自签证书，浏览器直连要先导入证书；
 且握手需要 token/会话串/客户端 IP，放服务端可让浏览器不持有第二套凭证。
@@ -55,8 +63,27 @@ web/src/pages/Kvm.vue   canvas 渲染 + 全局键鼠/触屏输入
 鼠标报文已与原版逐字节核对并送达，但 ESXi DCUI 不支持鼠标，指针效果待在有鼠标的客机上验证。
 
 **已知限制**：同时只允许一个主控会话。若已有别的会话占着主控，
-本代理会发 `CMD_SET_NEXT_MASTER` 申请完全控制并等待（此期间画面可见、键鼠无效），
+本代理会持续申请完全控制并重连争取（此期间画面可见、键鼠无效），
 自身为主控时则自动同意他人的申请。详见 `docs/API.md` 第 7 节。
+
+## BMC 会话表（重要运维提示）
+
+该 BMC 的 web 会话上限只有 **148**，占满后新登录被拒，且 `/kvm` 升级会"假成功"
+（先 101 再发一个完整的 HTTP 200 回退页，客户端报 `RSV1 must be clear`）。
+代理已做加固：**同一 BMC 账号只持一条会话**（多标签页共享）。
+另提供一键清理：
+
+```bash
+curl -X POST http://127.0.0.1:5177/api/maintenance/clear-bmc-sessions   # 需已登录（带 cookie）
+```
+
+彻底卡死（连登录都进不去）时走 IPMI 冷重置 BMC（**不影响主机与虚拟机**）：
+
+```bash
+python reverse/ipmi_reset_bmc.py    # 依赖 pyghmi；重置后约 2.5 分钟恢复
+```
+
+详见 `docs/API.md` 第 7 节的「救场流程」。
 
 ## 目录
 

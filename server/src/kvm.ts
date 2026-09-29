@@ -130,10 +130,33 @@ interface ViewerCfg {
   server_ip: string;
 }
 
-/** 浏览器侧的出口：把协议字节与状态推给当前浏览器的 WebSocket */
+/**
+ * 浏览器侧的出口。
+ *
+ * 注意这里下发的是**已重组的完整帧**而不是原始协议字节：
+ * 浏览器重连/刷新后是从半途接入的，而视频帧是差分的（skip 码沿用上一帧），
+ * 若把裸字节流交给浏览器，它的帧边界永远对不齐 → 一帧都收不齐。
+ * 服务端按 stream 消费后，浏览器只从「下一个完整帧」开始渲染，天然对齐。
+ */
 export interface KvmSink {
-  onData(buf: Buffer): void;
-  onState(state: KvmState, detail: string): void;
+  /** 控制/元信息（JSON 文本帧） */
+  send(obj: unknown): void;
+  /** 一帧的压缩数据（二进制帧） */
+  sendBinary(buf: Buffer): void;
+}
+
+/** 交给浏览器与解码 worker 的帧信息（字段名与 worker 期望的一致） */
+export interface FrameMeta {
+  SourceModeInfo: { X: number; Y: number };
+  DestinationModeInfo: { X: number; Y: number };
+  FrameHeader: {
+    JPEGTableSelector: number;
+    JPEGYUVTableMapping: number;
+    AdvanceTableSelector: number;
+    RC4Enable: number;
+  };
+  Mode420: number;
+  CompressData: { CompressSize: number };
 }
 
 /**
@@ -174,10 +197,15 @@ export class KvmSession extends EventEmitter {
       this.reapTimer = null;
     }
     this.sink = sink;
-    sink.onState(this.state, this.detail || (this.state === 'streaming' ? '已复用现有 KVM 会话' : ''));
+    sink.send({
+      type: 'state',
+      state: this.state,
+      detail: this.detail || (this.state === 'streaming' ? '已复用现有 KVM 会话' : ''),
+    });
     if (this.state === 'streaming') {
-      // 新客户端从半途接入，解码缓冲是空的：让服务器重发一屏完整画面
-      this.refresh();
+      // 新客户端从半途接入，解码缓冲是空的：要一整屏完整帧，否则差分的增量
+      // 会在空缓冲上解出花屏（实测过）
+      this.requestFullFrame();
     }
   }
 
@@ -191,24 +219,93 @@ export class KvmSession extends EventEmitter {
     }, this.graceMs);
   }
 
-  /** 请求服务器重发一屏完整画面（原版「刷新画面」同款） */
+  /** 帧重组的中间状态 */
+  private videoPrevComplete = true;
+  private videoParts: Buffer[] = [];
+  private videoLen = 0;
+  private videoMeta: FrameMeta | null = null;
+
+  /** 把视频包流按「帧」重组（规则见 docs/API.md 第 7 节），收齐一帧就下发 */
+  private onVideoPacket(payload: Buffer) {
+    if (this.videoPrevComplete) {
+      // 帧头 86 字节在 payload[2..88)
+      const h = payload.subarray(2, 88);
+      this.videoMeta = {
+        SourceModeInfo: { X: h.readUInt16LE(4), Y: h.readUInt16LE(6) },
+        DestinationModeInfo: { X: h.readUInt16LE(13), Y: h.readUInt16LE(15) },
+        FrameHeader: {
+          JPEGTableSelector: h[44],
+          JPEGYUVTableMapping: h[45],
+          AdvanceTableSelector: h[47],
+          RC4Enable: h[53],
+        },
+        Mode420: h[55],
+        // 与固件一致：只取 3 字节（原版读 e[72] 越界恒为 0）
+        CompressData: { CompressSize: payload[71] | (payload[72] << 8) | (payload[73] << 16) },
+      };
+      this.videoParts = [payload.subarray(88)];
+      this.videoLen = payload.length - 88;
+    } else {
+      this.videoParts.push(payload.subarray(2));
+      this.videoLen += payload.length - 2;
+    }
+
+    const need = this.videoMeta?.CompressData.CompressSize ?? 0;
+    if (need > 0 && this.videoLen >= need) {
+      const data = Buffer.concat(this.videoParts, need);
+      this.stats.frames++;
+      this.sink?.send({ type: 'frame', header: this.videoMeta, size: need });
+      this.sink?.sendBinary(data);
+      this.videoParts = [];
+      this.videoLen = 0;
+      this.videoPrevComplete = true;
+    } else {
+      this.videoPrevComplete = false;
+    }
+  }
+
+  /** 请求重绘（原版「刷新画面」同款）：让 BMC 把画面变化区重发一遍，不清客户端缓冲 */
   refresh() {
     this.ws?.send(packet(CMD.REFRESH_VIDEO_SCREEN, 0));
+  }
+
+  /**
+   * 要一整屏完整帧：先 `CMD_PAUSE_REDIRECTION` 再 `CMD_RESUME_REDIRECTION`。
+   * 原版注释写明 resume 会拿到 full screen video buffer，这也正是客户端
+   * 「中途接入」时唯一能拿到完整帧的办法（REFRESH 只补变化区）。
+   * 同时清掉半截帧状态并让浏览器重建解码缓冲。
+   */
+  private requestFullFrame() {
+    if (this.ws?.readyState !== WsClient.OPEN) return;
+    this.ws.send(packet(CMD.PAUSE_REDIRECTION, 0));
+    this.videoParts = [];
+    this.videoLen = 0;
+    this.videoPrevComplete = true; // 恢复后从完整帧开始
+    this.sink?.send({ type: 'reset' });
+    setTimeout(() => {
+      if (this.ws?.readyState === WsClient.OPEN) {
+        this.ws.send(packet(CMD.RESUME_REDIRECTION, 0));
+      }
+    }, 150);
   }
 
   get attached(): boolean {
     return this.sink !== null;
   }
 
-  /** 会话是否还能用（失败/已关闭的不能复用） */
+  /**
+   * 会话是否还能复用：以 BSD socket 真实存活为准。
+   * 只看 state 不够——握手期就崩掉的会话 state 可能还停在 handshaking。
+   */
   get usable(): boolean {
-    return !this.closed && this.state !== 'failed' && this.state !== 'closed';
+    if (this.closed || this.state === 'failed' || this.state === 'closed') return false;
+    return this.ws?.readyState === WsClient.OPEN;
   }
 
   private setState(state: KvmState, detail = '') {
     this.state = state;
     this.detail = detail;
-    this.sink?.onState(state, detail);
+    this.sink?.send({ type: 'state', state, detail });
     this.emit('state', state, detail);
   }
 
@@ -247,6 +344,12 @@ export class KvmSession extends EventEmitter {
     this.ws.on('error', (err) => {
       this.cleanup();
       this.setState('failed', (err as Error).message);
+      // 关掉底层连接：否则 readyState 仍是 OPEN，会被当成"还能用"而复用
+      try {
+        this.ws?.terminate();
+      } catch {
+        /* 忽略 */
+      }
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -371,10 +474,12 @@ export class KvmSession extends EventEmitter {
           this.requestFullAccess();
           return;
         }
-        if (low === SHARING.STATUS_KVM_PRIV_RESPONSE_TO_SLAVE || low === SHARING.STATUS_KVM_PRIV_SWITCH_MASTER) {
-          this.gotMaster = true;
-          this.stopMasterRetry();
-          this.setState('streaming', name);
+        if (low === SHARING.STATUS_KVM_PRIV_RESPONSE_TO_SLAVE && (status >> 8) === SHARING.KVM_REQ_ALLOWED) {
+          // 明确的「已授予完全控制」
+          this.grantFullAccess('主控权已授予');
+        } else if (low === SHARING.STATUS_KVM_PRIV_SWITCH_MASTER) {
+          // 服务器把主控权交接给我们
+          this.grantFullAccess('主控权已交接');
         } else {
           this.emit('state', this.state, `共享状态 ${name}`);
         }
@@ -391,20 +496,33 @@ export class KvmSession extends EventEmitter {
         this.stats.videoPackets++;
         this.stats.videoBytes += len;
         if (this.state !== 'streaming') this.setState('streaming');
-        break;
+        this.onVideoPacket(payload);
+        return;
       }
+      case CMD.PAINT_BLANK_SCREEN:
+        this.sink?.send({ type: 'blank' });
+        return;
+      case CMD.POWER_STATUS:
+        this.sink?.send({ type: 'power', on: status === 1 });
+        return;
       case CMD.KEEP_ALIVE_PKT:
         return; // 心跳不必转发给浏览器
+      case CMD.ACTIVE_CLIENTS:
+        return; // 在线客户端列表浏览器暂时用不上
       default:
-        break;
+        return;
     }
-    // 其余一律原样转给浏览器（视频包、电源状态、在线客户端、空屏指令等）
-    this.sink?.onData(packet(cmd, status, payload));
   }
 
-  /** 是否已取得主控；未取得时定时重发请求 */
+  /**
+   * 是否已取得**完全控制**（只有它才代表键鼠有效）。
+   * ⚠️ 不能把 `RESPONSE_TO_SLAVE` 一律当授权：实测会收到
+   * `resp-to-slave/master-terminated`（旧主控退出），那不是授权，
+   * 误判会导致停在"只读从属"却不再申请（踩过）。
+   */
   private gotMaster = false;
   private masterRetry: NodeJS.Timeout | null = null;
+  private masterSince = 0;
 
   /**
  * 从属会话申请完全控制：CMD_SET_NEXT_MASTER(0x32) len=0 status=0。
@@ -414,6 +532,10 @@ export class KvmSession extends EventEmitter {
  */
   private requestFullAccess() {
     if (this.gotMaster) return;
+    if (!this.masterSince) {
+      this.masterSince = Date.now();
+      this.masterReconnects = 0;
+    }
     this.ws?.send(packet(CMD.SET_NEXT_MASTER, 0));
     if (!this.masterRetry) {
       this.masterRetry = setInterval(() => {
@@ -421,10 +543,32 @@ export class KvmSession extends EventEmitter {
           this.stopMasterRetry();
           return;
         }
+        // 申请迟迟没被批：多半是旧主控在 BMC 侧还没释放。
+        // 重连一次通常能直接拿到主控（见 docs/API.md 的重连竞态说明），最多试 3 次。
+        if (Date.now() - this.masterSince > 12_000 && this.masterReconnects < 3) {
+          this.masterReconnects++;
+          this.masterSince = Date.now();
+          this.emit('state', this.state, `未获授权，重连争取主控（第 ${this.masterReconnects} 次）`);
+          this.restartRequested = true;
+          this.ws?.close();
+          return;
+        }
         this.ws?.send(packet(CMD.SET_NEXT_MASTER, 0));
-      }, 5000);
+      }, 4000);
     }
   }
+
+  /** 已拿到完全控制 */
+  private grantFullAccess(detail: string) {
+    this.gotMaster = true;
+    this.masterSince = 0;
+    this.stopMasterRetry();
+    this.setState('streaming', detail);
+  }
+
+  private masterReconnects = 0;
+  /** 该会话因争取主控而主动断开、需要重建（由 route 读取） */
+  restartRequested = false;
 
   private stopMasterRetry() {
     if (this.masterRetry) {
@@ -476,8 +620,10 @@ export class KvmSession extends EventEmitter {
       }, 300);
       this.ws = null;
     }
-    this.sink?.onState('closed', '');
+    // sink 可能已经被清掉（会话自行断开争主控时）
+    this.sink?.send({ type: 'state', state: 'closed', detail: '' });
     this.setState('closed');
+    this.emit('closed');
     this.removeAllListeners();
   }
 }
