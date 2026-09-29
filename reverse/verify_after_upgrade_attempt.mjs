@@ -1,0 +1,15 @@
+import { Agent, fetch as uFetch } from 'undici';
+const HOST='192.168.0.200';
+const agent = new Agent({ connect: { rejectUnauthorized: false } });
+const raw=(p,o={})=>uFetch(`https://${HOST}${p}`,{...o,dispatcher:agent,signal:AbortSignal.timeout(o.timeoutMs||40000)});
+const lr=await raw('/api/session',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username:'admin',password:process.env.BMC_PASS||''}).toString()});
+const login=await lr.json();
+const cookie=(lr.headers.getSetCookie?.()??[]).map(c=>c.split(';')[0]).join('; ');
+const h={cookie,'x-csrftoken':login.CSRFToken};
+const fi=await (await raw('/api/firmware-info',{headers:h})).json();
+console.log('firmware-info 版本字段:', JSON.stringify(Object.fromEntries(Object.entries(fi).filter(([k])=>/ver|rev|build|date/i.test(k)))).slice(0,300));
+const sess=await (await raw('/api/settings/service-sessions',{headers:h})).json();
+console.log('当前会话数:', Array.isArray(sess)?sess.length:sess);
+const adv=await (await raw('/api/settings/media/adviser',{headers:h})).json();
+console.log('KVM adviser lic/status:', adv.license, adv.status);
+process.exit(0);
