@@ -28,7 +28,9 @@ let tempChart: echarts.ECharts | null = null;
 let fanChart: echarts.ECharts | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
 
-const TEMP_KEYS = ['CPU0_TEMP', 'CPU0_DTS', 'MB_TEMP1', 'MB_TEMP2'];
+// 温度趋势只画真实温度（°C）；CPU0_DTS 是"距临界温度的余量"（越小越热），
+// 与温度不同源，混在同一张图上会误导读者并拉偏纵轴
+const TEMP_KEYS = ['CPU0_TEMP', 'MB_TEMP1', 'MB_TEMP2'];
 const FAN_KEYS = ['CPU0_FAN', 'SYS_FAN1', 'SYS_FAN2', 'SYS_FAN3', 'SYS_FAN4'];
 
 function push(map: Map<string, { t: number; v: number }[]>, key: string, v: number) {
