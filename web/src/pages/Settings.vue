@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import { h, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
+  NAlert,
   NButton,
   NDataTable,
   NDescriptions,
   NDescriptionsItem,
+  NForm,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NModal,
   NPopconfirm,
+  NSelect,
   NSpace,
+  NSwitch,
   NTabPane,
   NTabs,
   NTag,
@@ -40,6 +48,195 @@ async function clearBmcSessions() {
   } finally {
     clearing.value = false;
   }
+}
+
+/** 各写操作共用的提交状态 */
+const saving = ref(false);
+/** 用户在「日期时间」页签改过内容后，自动刷新不再覆盖表单 */
+const dtDirty = ref(false);
+
+/** 统一的写操作封装：确认由调用方负责，这里只管提交与刷新 */
+async function submitWrite(
+  label: string,
+  path: string,
+  body: unknown,
+  method: 'POST' | 'PUT' | 'DELETE' = 'PUT',
+) {
+  saving.value = true;
+  try {
+    await bmcSend(method, path, body);
+    message.success(`${label}成功`);
+    await refresh();
+    return true;
+  } catch (e) {
+    message.error(`${label}失败：${(e as Error).message}`);
+    return false;
+  } finally {
+    saving.value = false;
+  }
+}
+
+// ---------- 用户 ----------
+const userDialog = ref(false);
+const userForm = ref({ userid: 0, name: '', password: '', privilege: 'user', kvm: 1, vmedia: 1 });
+const userIsNew = ref(false);
+
+function openUserEdit(u: BmcUser) {
+  userIsNew.value = false;
+  userForm.value = {
+    userid: u.userid,
+    name: u.name,
+    password: '',
+    privilege: u.privilege || 'user',
+    kvm: u.kvm ? 1 : 0,
+    vmedia: u.vmedia ? 1 : 0,
+  };
+  userDialog.value = true;
+}
+
+function openUserCreate() {
+  userIsNew.value = true;
+  userForm.value = { userid: 0, name: '', password: '', privilege: 'user', kvm: 1, vmedia: 1 };
+  userDialog.value = true;
+}
+
+async function saveUser() {
+  const f = userForm.value;
+  if (!f.name.trim()) {
+    message.warning('用户名不能为空');
+    return;
+  }
+  if (userIsNew.value && f.password.length < 8) {
+    message.warning('BMC 要求密码至少 8 位');
+    return;
+  }
+  const body: Record<string, unknown> = {
+    name: f.name,
+    privilege: f.privilege,
+    kvm: f.kvm,
+    vmedia: f.vmedia,
+    access: 1,
+  };
+  if (f.password) body.password = f.password;
+  const ok = userIsNew.value
+    ? await submitWrite('新建用户', 'settings/users', body, 'POST')
+    : await submitWrite('保存用户', `settings/users/${f.userid}`, body, 'PUT');
+  if (ok) userDialog.value = false;
+}
+
+async function deleteUser(u: BmcUser) {
+  await submitWrite('删除用户', `settings/users/${u.userid}`, undefined, 'DELETE');
+}
+
+// ---------- 服务 ----------
+const serviceDialog = ref(false);
+const serviceForm = ref({ id: 0, service_name: '', state: 1, time_out: 1800, maximum_sessions: 148 });
+
+function openServiceEdit(sv: BmcService) {
+  serviceForm.value = {
+    id: sv.id,
+    service_name: sv.service_name,
+    state: sv.state,
+    time_out: sv.time_out,
+    maximum_sessions: sv.maximum_sessions,
+  };
+  serviceDialog.value = true;
+}
+
+async function saveService() {
+  const f = serviceForm.value;
+  const ok = await submitWrite('保存服务', `settings/services/${f.id}`, {
+    state: f.state,
+    time_out: f.time_out,
+    maximum_sessions: f.maximum_sessions,
+  });
+  if (ok) serviceDialog.value = false;
+}
+
+// ---------- 网络（高危：写错会失联） ----------
+const netDialog = ref(false);
+const netForm = ref({
+  id: 0,
+  interface_name: '',
+  ipv4_enable: 1,
+  ipv4_dhcp_enable: 0,
+  ipv4_address: '',
+  ipv4_subnet: '',
+  ipv4_gateway: '',
+});
+
+function openNetEdit(n: NetIf) {
+  netForm.value = {
+    id: n.id,
+    interface_name: n.interface_name,
+    ipv4_enable: n.ipv4_enable,
+    ipv4_dhcp_enable: n.ipv4_dhcp_enable,
+    ipv4_address: n.ipv4_address,
+    ipv4_subnet: n.ipv4_subnet,
+    ipv4_gateway: n.ipv4_gateway,
+  };
+  netDialog.value = true;
+}
+
+async function saveNet() {
+  const f = netForm.value;
+  const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (f.ipv4_dhcp_enable !== 1) {
+    if (!ipv4.test(f.ipv4_address)) {
+      message.warning('IPv4 地址格式不正确');
+      return;
+    }
+    if (f.ipv4_subnet && !ipv4.test(f.ipv4_subnet)) {
+      message.warning('掩码格式不正确（例如 255.255.255.0）');
+      return;
+    }
+    if (f.ipv4_gateway && !ipv4.test(f.ipv4_gateway)) {
+      message.warning('网关格式不正确');
+      return;
+    }
+  }
+  const ok = await submitWrite('保存网络设置', `settings/network/${f.id}`, {
+    ipv4_enable: f.ipv4_enable,
+    ipv4_dhcp_enable: f.ipv4_dhcp_enable,
+    ipv4_address: f.ipv4_address,
+    ipv4_subnet: f.ipv4_subnet,
+    ipv4_gateway: f.ipv4_gateway,
+  });
+  if (ok) netDialog.value = false;
+}
+
+// ---------- 日期时间 ----------
+const dtForm = ref({ timezone: '', ntp_auto_date: 0, primary_ntp: '', secondary_ntp: '' });
+
+function resetDateTime() {
+  dtDirty.value = false;
+  const d = datetime.value;
+  dtForm.value = {
+    timezone: d?.timezone ?? '',
+    ntp_auto_date: d?.ntp_auto_date ?? 0,
+    primary_ntp: d?.primary_ntp ?? '',
+    secondary_ntp: d?.secondary_ntp ?? '',
+  };
+}
+
+async function saveDateTime() {
+  const f = dtForm.value;
+  // 表单还没加载到数据时禁止保存，否则会把空时区/空 NTP 写进 BMC
+  if (!datetime.value) {
+    message.warning('还没取到当前时间设置，请稍后重试');
+    return;
+  }
+  if (f.ntp_auto_date === 1 && !f.primary_ntp.trim()) {
+    message.warning('启用 NTP 时必须填主 NTP 服务器');
+    return;
+  }
+  const ok = await submitWrite('保存时间设置', 'settings/date-time', {
+    timezone: f.timezone.trim(),
+    ntp_auto_date: f.ntp_auto_date,
+    primary_ntp: f.primary_ntp.trim(),
+    secondary_ntp: f.secondary_ntp.trim(),
+  });
+  if (ok) dtDirty.value = false;
 }
 
 interface FruDevice {
@@ -77,6 +274,7 @@ interface BmcService {
   id: number;
   service_name: string;
   state: number;
+  time_out: number;
   non_secure_port: number;
   secure_port: number;
   maximum_sessions: number;
@@ -117,6 +315,25 @@ const userColumns: DataTableColumns<BmcUser> = [
   { title: 'KVM', key: 'kvm', width: 80, render: (u) => (u.kvm ? '✓' : '—') },
   { title: '虚拟媒体', key: 'vmedia', width: 90, render: (u) => (u.vmedia ? '✓' : '—') },
   { title: 'SSH 公钥', key: 'ssh_key', ellipsis: { tooltip: true }, render: (u) => (u.ssh_key === 'Not Available' ? '—' : u.ssh_key) },
+  {
+    title: '操作',
+    key: 'op',
+    width: 150,
+    render: (u) =>
+      h(NSpace, { size: 4 }, {
+        default: () => [
+          h(NButton, { size: 'tiny', onClick: () => openUserEdit(u) }, { default: () => '编辑' }),
+          h(
+            NPopconfirm,
+            { onPositiveClick: () => deleteUser(u) },
+            {
+              trigger: () => h(NButton, { size: 'tiny', type: 'error', quaternary: true }, { default: () => '删除' }),
+              default: () => `删除用户「${u.name}」？此操作不可撤销。`,
+            },
+          ),
+        ],
+      }),
+  },
 ];
 
 function h_tag(text: string, type: 'success' | 'default' | 'info') {
@@ -137,6 +354,13 @@ const netColumns: DataTableColumns<NetIf> = [
     render: (n) => (n.ipv4_dhcp_enable ? 'DHCP' : '静态'),
   },
   { title: 'IPv6', key: 'ipv6_address' },
+  {
+    title: '操作',
+    key: 'op',
+    width: 90,
+    render: (n) =>
+      h(NButton, { size: 'tiny', type: 'warning', onClick: () => openNetEdit(n) }, { default: () => '编辑' }),
+  },
 ];
 
 const serviceColumns: DataTableColumns<BmcService> = [
@@ -157,6 +381,13 @@ const serviceColumns: DataTableColumns<BmcService> = [
       const cur = known ? (known[s.service_name] ?? 0) : '—';
       return `${cur} / ${s.maximum_sessions}`;
     },
+  },
+  {
+    title: '操作',
+    key: 'op',
+    width: 90,
+    render: (sv) =>
+      h(NButton, { size: 'tiny', onClick: () => openServiceEdit(sv) }, { default: () => '编辑' }),
   },
 ];
 
@@ -189,6 +420,15 @@ async function refresh() {
     network.value = netData;
     services.value = svcData;
     datetime.value = dtData;
+    // 表单只在未编辑时同步，避免把用户正在输入的内容覆盖掉
+    if (!dtDirty.value) {
+      dtForm.value = {
+        timezone: dtData.timezone ?? '',
+        ntp_auto_date: dtData.ntp_auto_date ?? 0,
+        primary_ntp: dtData.primary_ntp ?? '',
+        secondary_ntp: dtData.secondary_ntp ?? '',
+      };
+    }
   } catch {
     /* 401 由 api 层处理 */
   } finally {
@@ -229,7 +469,20 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="users" :tab="isMobile ? '用户' : '用户管理'">
-          <n-data-table :loading="tableLoading" :columns="userColumns" :data="users" size="small" :bordered="false" :scroll-x="isMobile ? 620 : undefined" />
+          <n-space vertical size="small">
+            <div>
+              <n-button size="small" type="primary" @click="openUserCreate">新建用户</n-button>
+            </div>
+            <n-data-table
+              :loading="tableLoading"
+              :columns="userColumns"
+              :data="users"
+              size="small"
+              :bordered="false"
+              :scroll-x="isMobile ? 780 : undefined"
+            />
+            <p class="tip">改密码时留空表示不改；BMC 要求密码至少 8 位。</p>
+          </n-space>
         </n-tab-pane>
 
         <n-tab-pane name="network" tab="网络">
@@ -259,17 +512,42 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="datetime" :tab="isMobile ? '时间' : '日期时间'">
-          <n-descriptions bordered :column="isMobile ? 1 : 2" size="small">
-            <n-descriptions-item label="时区">{{ datetime?.timezone ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="NTP">
-              <n-tag size="small" :type="datetime?.ntp_auto_date === 1 ? 'success' : 'warning'">
-                {{ datetime?.ntp_auto_date === 1 ? '自动同步' : '未启用/手动' }}
-              </n-tag>
-            </n-descriptions-item>
-            <n-descriptions-item label="主 NTP">{{ datetime?.primary_ntp ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="备 NTP">{{ datetime?.secondary_ntp ?? '—' }}</n-descriptions-item>
-          </n-descriptions>
-          <p class="tip">BMC 未启用 NTP，时钟可能不准，日志时间戳会随之偏移。</p>
+          <n-form label-placement="left" :label-width="90" size="small" style="max-width: 520px">
+            <n-form-item label="时区">
+              <n-input v-model:value="dtForm.timezone" placeholder="Etc/GMT" @update:value="dtDirty = true" />
+            </n-form-item>
+            <n-form-item label="自动 NTP">
+              <n-switch
+                :value="dtForm.ntp_auto_date === 1"
+                @update:value="(v: boolean) => { dtForm.ntp_auto_date = v ? 1 : 0; dtDirty = true; }"
+              />
+            </n-form-item>
+            <n-form-item label="主 NTP">
+              <n-input
+                v-model:value="dtForm.primary_ntp"
+                placeholder="pool.ntp.org"
+                :disabled="dtForm.ntp_auto_date !== 1"
+                @update:value="dtDirty = true"
+              />
+            </n-form-item>
+            <n-form-item label="备 NTP">
+              <n-input
+                v-model:value="dtForm.secondary_ntp"
+                placeholder="time.nist.gov"
+                :disabled="dtForm.ntp_auto_date !== 1"
+                @update:value="dtDirty = true"
+              />
+            </n-form-item>
+            <n-form-item label=" ">
+              <n-space>
+                <n-button size="small" type="primary" :loading="saving" @click="saveDateTime">保存</n-button>
+                <n-button size="small" quaternary @click="resetDateTime">放弃修改</n-button>
+              </n-space>
+            </n-form-item>
+          </n-form>
+          <p class="tip">
+            当前时区 {{ datetime?.timezone ?? '—' }}。BMC 未启用 NTP 时时钟可能不准，日志时间戳会随之偏移。
+          </p>
         </n-tab-pane>
 
         <n-tab-pane name="services" tab="服务">
@@ -289,6 +567,121 @@ onBeforeUnmount(() => {
           </p>
         </n-tab-pane>
       </n-tabs>
+
+      <!-- 用户编辑 / 新建 -->
+      <n-modal
+        v-model:show="userDialog"
+        preset="card"
+        :title="userIsNew ? '新建用户' : '编辑用户 ' + userForm.name"
+        style="max-width: 460px"
+      >
+        <n-form label-placement="left" :label-width="72" size="small">
+          <n-form-item label="用户名">
+            <n-input v-model:value="userForm.name" :disabled="!userIsNew" />
+          </n-form-item>
+          <n-form-item :label="userIsNew ? '密码' : '改密码'">
+            <n-input
+              v-model:value="userForm.password"
+              type="password"
+              show-password-on="click"
+              :placeholder="userIsNew ? '至少 8 位' : '留空表示不修改'"
+            />
+          </n-form-item>
+          <n-form-item label="权限">
+            <n-select
+              v-model:value="userForm.privilege"
+              :options="[
+                { label: 'administrator', value: 'administrator' },
+                { label: 'operator', value: 'operator' },
+                { label: 'user', value: 'user' },
+                { label: 'none', value: 'none' },
+              ]"
+            />
+          </n-form-item>
+          <n-form-item label="KVM">
+            <n-switch :value="userForm.kvm === 1" @update:value="(v: boolean) => (userForm.kvm = v ? 1 : 0)" />
+          </n-form-item>
+          <n-form-item label="虚拟媒体">
+            <n-switch :value="userForm.vmedia === 1" @update:value="(v: boolean) => (userForm.vmedia = v ? 1 : 0)" />
+          </n-form-item>
+        </n-form>
+        <template #footer>
+          <n-space justify="end">
+            <n-button size="small" quaternary @click="userDialog = false">取消</n-button>
+            <n-button size="small" type="primary" :loading="saving" @click="saveUser">保存</n-button>
+          </n-space>
+        </template>
+      </n-modal>
+
+      <!-- 服务编辑 -->
+      <n-modal
+        v-model:show="serviceDialog"
+        preset="card"
+        :title="'编辑服务 ' + serviceForm.service_name"
+        style="max-width: 460px"
+      >
+        <n-form label-placement="left" :label-width="90" size="small">
+          <n-form-item label="启用">
+            <n-switch :value="serviceForm.state === 1" @update:value="(v: boolean) => (serviceForm.state = v ? 1 : 0)" />
+          </n-form-item>
+          <n-form-item label="空闲超时">
+            <n-input-number v-model:value="serviceForm.time_out" :min="-1" :max="65535" style="width: 150px" />
+            <span class="tip" style="margin-left: 8px">秒</span>
+          </n-form-item>
+          <n-form-item label="会话上限">
+            <n-input-number v-model:value="serviceForm.maximum_sessions" :min="1" :max="255" style="width: 150px" />
+          </n-form-item>
+        </n-form>
+        <n-alert v-if="serviceForm.service_name === 'web'" type="warning" size="small" style="margin-top: 8px">
+          改动 web 服务的端口/超时需要重连 BMC；会话上限调得太小会把自己拒之门外。
+        </n-alert>
+        <template #footer>
+          <n-space justify="end">
+            <n-button size="small" quaternary @click="serviceDialog = false">取消</n-button>
+            <n-button size="small" type="primary" :loading="saving" @click="saveService">保存</n-button>
+          </n-space>
+        </template>
+      </n-modal>
+
+      <!-- 网络编辑（高危） -->
+      <n-modal
+        v-model:show="netDialog"
+        preset="card"
+        :title="'编辑网络 ' + netForm.interface_name"
+        style="max-width: 480px"
+      >
+        <n-alert type="error" size="small" style="margin-bottom: 12px">
+          ⚠️ 网络设置写错会直接失去 BMC 访问，只能到机器前用 IPMI / 串口救回。改地址前请确认新地址可用。
+        </n-alert>
+        <n-form label-placement="left" :label-width="90" size="small">
+          <n-form-item label="DHCP">
+            <n-switch
+              :value="netForm.ipv4_dhcp_enable === 1"
+              @update:value="(v: boolean) => (netForm.ipv4_dhcp_enable = v ? 1 : 0)"
+            />
+          </n-form-item>
+          <n-form-item label="IPv4 地址">
+            <n-input v-model:value="netForm.ipv4_address" :disabled="netForm.ipv4_dhcp_enable === 1" />
+          </n-form-item>
+          <n-form-item label="掩码">
+            <n-input v-model:value="netForm.ipv4_subnet" :disabled="netForm.ipv4_dhcp_enable === 1" />
+          </n-form-item>
+          <n-form-item label="网关">
+            <n-input v-model:value="netForm.ipv4_gateway" :disabled="netForm.ipv4_dhcp_enable === 1" />
+          </n-form-item>
+        </n-form>
+        <template #footer>
+          <n-space justify="end">
+            <n-button size="small" quaternary @click="netDialog = false">取消</n-button>
+            <n-popconfirm @positive-click="saveNet">
+              <template #trigger>
+                <n-button size="small" type="error" :loading="saving">确认写入</n-button>
+              </template>
+              确认写入网络配置？写错会导致 BMC 失联。
+            </n-popconfirm>
+          </n-space>
+        </template>
+      </n-modal>
     </n-card>
   </n-space>
 </template>
