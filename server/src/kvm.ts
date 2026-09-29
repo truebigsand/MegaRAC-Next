@@ -508,8 +508,21 @@ export class KvmSession extends EventEmitter {
         return;
       case CMD.KEEP_ALIVE_PKT:
         return; // 心跳不必转发给浏览器
-      case CMD.ACTIVE_CLIENTS:
-        return; // 在线客户端列表浏览器暂时用不上
+      case CMD.ACTIVE_CLIENTS: {
+        // 每条 134 字节：用户名(64) + IP(65) + 会话 id(1) + IPMI 特权(4)
+        const list: { name: string; ip: string; id: number; privilege: number }[] = [];
+        for (let off = 0; off + 134 <= payload.length; off += 134) {
+          const cut = (b: Buffer) => b.toString('utf8').replace(/ +$/, '').trim();
+          list.push({
+            name: cut(payload.subarray(off, off + 64)),
+            ip: cut(payload.subarray(off + 64, off + 129)),
+            id: payload[off + 129],
+            privilege: payload[off + 130],
+          });
+        }
+        this.sink?.send({ type: 'clients', list, master: this.gotMaster, sessionIndex: this.sessionIndex });
+        return;
+      }
       default:
         return;
     }

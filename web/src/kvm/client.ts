@@ -46,7 +46,16 @@ export interface KvmHandlers {
   onFrame(frame: VideoFrame): void;
   /** 主机画面尺寸变化 */
   onResolution(width: number, height: number): void;
+  /** 在线 KVM 客户端列表（谁在看这台机器） */
+  onClients?(list: KvmClientInfo[]): void;
   onLog?(text: string): void;
+}
+
+export interface KvmClientInfo {
+  name: string;
+  ip: string;
+  id: number;
+  privilege: number;
 }
 
 interface ServerMessage {
@@ -56,6 +65,7 @@ interface ServerMessage {
   header?: FrameMeta;
   size?: number;
   on?: boolean;
+  list?: KvmClientInfo[];
 }
 
 /** 把字节按 4 个一组塞进 Int32 数组（小端）——解码 worker 的数据形状 */
@@ -135,6 +145,9 @@ export class KvmClient {
         break;
       case 'power':
         this.handlers.onLog?.(`电源状态：${msg.on ? '开机' : '关机'}`);
+        break;
+      case 'clients':
+        this.handlers.onClients?.(msg.list ?? []);
         break;
       default:
         break;

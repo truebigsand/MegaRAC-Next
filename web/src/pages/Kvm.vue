@@ -2,10 +2,10 @@
 import { onBeforeUnmount, onMounted, ref, computed } from 'vue';
 import {
   NAlert, NButton, NCard, NPopconfirm, NSelect, NSpace, NStatistic, NTag, NText,
-  useMessage,
+  NTooltip, useMessage,
 } from 'naive-ui';
 import { bmcSend } from '../api';
-import { KvmClient, type KvmState, type VideoFrame } from '../kvm/client';
+import { KvmClient, type KvmClientInfo, type KvmState, type VideoFrame } from '../kvm/client';
 import { HID_CODES, MODIFIER_CODES, mouseButtons } from '../kvm/keymap';
 
 const message = useMessage();
@@ -19,9 +19,16 @@ const height = ref(0);
 const frames = ref(0);
 const fps = ref(0);
 const mouseMode = ref<'absolute' | 'relative'>('absolute');
-/** 缩放：fit = 适应宽度；其余为百分比 */
-const scaling = ref<'fit' | '50' | '75' | '100' | '125' | '150'>('fit');
+/**
+ * 缩放：contain = 整屏适应（等比缩到容器内，**不出现滚动条**）；
+ * 百分比为原始尺寸的比例，超出容器时允许滚动。
+ */
+const scaling = ref<'contain' | '50' | '75' | '100' | '125' | '150'>('contain');
+/** 适应窗口时按容器算出的 CSS 尺寸 */
+const fitted = ref<{ w: number; h: number } | null>(null);
 const powerBusy = ref(false);
+/** 在线 KVM 客户端（谁也在看这台机器） */
+const clients = ref<KvmClientInfo[]>([]);
 
 let client: KvmClient | null = null;
 let ctx: CanvasRenderingContext2D | null = null;
@@ -71,12 +78,14 @@ function onResolution(w: number, h: number) {
     canvas.width = w;
     canvas.height = h;
   }
+  computeFit();
 }
 
 function onState(next: KvmState, nextDetail: string) {
   state.value = next;
   detail.value = nextDetail;
   if (next === 'failed') message.error(nextDetail || 'KVM 连接失败');
+  if (next === 'closed' || next === 'idle' || next === 'failed') clients.value = [];
 }
 
 function startClient() {
@@ -85,7 +94,14 @@ function startClient() {
   ctx = canvas.getContext('2d', { alpha: false });
   frames.value = 0;
   fps.value = 0;
-  client = new KvmClient({ onState, onFrame, onResolution });
+  client = new KvmClient({
+    onState,
+    onFrame,
+    onResolution,
+    onClients: (list) => {
+      clients.value = list;
+    },
+  });
   client.start().catch((e: Error) => {
     state.value = 'failed';
     detail.value = e.message;
@@ -107,6 +123,30 @@ function disconnect() {
   detail.value = '';
   frames.value = 0;
   fps.value = 0;
+}
+
+/** 按容器可用空间等比缩放（contain） */
+function computeFit() {
+  const el = wrapEl.value;
+  if (!el || !width.value || !height.value) return;
+  const pad = 0;
+  const availW = el.clientWidth - pad;
+  const availH = el.clientHeight - pad;
+  if (availW <= 0 || availH <= 0) return;
+  const k = Math.min(availW / width.value, availH / height.value);
+  fitted.value = { w: Math.floor(width.value * k), h: Math.floor(height.value * k) };
+}
+
+let stageObserver: ResizeObserver | null = null;
+
+/** 画布最终 CSS 尺寸：适应窗口用算出来的值，百分比按原始尺寸乘系数 */
+function canvasStyle() {
+  if (scaling.value === 'contain') {
+    if (!fitted.value) return undefined;
+    return { width: fitted.value.w + 'px', height: fitted.value.h + 'px' };
+  }
+  if (!width.value) return undefined;
+  return { width: (width.value * Number(scaling.value)) / 100 + 'px', height: 'auto' };
 }
 
 function refresh() {
@@ -286,11 +326,18 @@ onMounted(() => {
   connect();
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  const el = wrapEl.value;
+  if (el && typeof ResizeObserver !== 'undefined') {
+    stageObserver = new ResizeObserver(() => computeFit());
+    stageObserver.observe(el);
+  }
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
+  stageObserver?.disconnect();
+  stageObserver = null;
   disconnect();
 });
 </script>
@@ -303,6 +350,16 @@ onBeforeUnmount(() => {
           <span>KVM 远程控制台</span>
           <n-tag :type="stateType" size="small">{{ stateText }}</n-tag>
           <n-text v-if="width" depth="3" style="font-size: 13px">{{ width }}×{{ height }}</n-text>
+          <n-tooltip v-if="clients.length">
+            <template #trigger>
+              <n-tag size="small" type="info">在线 {{ clients.length }} 人</n-tag>
+            </template>
+            <div style="font-size: 12px; line-height: 1.6">
+              <div v-for="c in clients" :key="c.id">
+                {{ c.name || '（未知）' }} · {{ c.ip || '—' }} · 会话 #{{ c.id }}
+              </div>
+            </div>
+          </n-tooltip>
         </n-space>
       </template>
       <template #header-extra>
@@ -312,7 +369,7 @@ onBeforeUnmount(() => {
             size="small"
             style="width: 108px"
             :options="[
-              { label: '适应宽度', value: 'fit' },
+              { label: '适应窗口', value: 'contain' },
               { label: '50%', value: '50' },
               { label: '75%', value: '75' },
               { label: '100%', value: '100' },
@@ -363,8 +420,8 @@ onBeforeUnmount(() => {
           <canvas
             ref="canvasEl"
             class="kvm-canvas"
-            :style="scaling === 'fit' ? undefined : { width: (width * Number(scaling)) / 100 + 'px', height: 'auto' }"
-            :class="scaling === 'fit' ? 'kvm-fit' : 'kvm-actual'"
+            :class="scaling === 'contain' ? 'kvm-adapt' : 'kvm-scrollable'"
+            :style="canvasStyle()"
           />
           <div v-if="fps === 0 && state === 'streaming'" class="kvm-overlay">
             已连接，等待主机画面…
@@ -421,27 +478,31 @@ onBeforeUnmount(() => {
 .kvm-stage {
   position: relative;
   width: 100%;
-  min-height: 320px;
-  max-height: 74vh;
-  overflow: auto;
+  height: 72vh;
+  min-height: 300px;
   background: #000;
   border-radius: 4px;
   outline: none;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
+  /* 默认「适应窗口」不滚动；百分比模式由 .kvm-scrollable 打开滚动 */
+  overflow: hidden;
+}
+.kvm-stage:has(.kvm-scrollable) {
+  overflow: auto;
 }
 .kvm-canvas {
   display: block;
   cursor: crosshair;
   touch-action: none;
-}
-.kvm-fit {
-  max-width: 100%;
-  height: auto;
-}
-.kvm-actual {
   flex: none;
+}
+.kvm-adapt {
+  max-width: 100%;
+  max-height: 100%;
+}
+.kvm-scrollable {
   max-width: none;
 }
 .kvm-overlay {
