@@ -275,6 +275,42 @@ Bundle 中 `models/chassis_status`：
 偏移 8: len 字节 payload
 ```
 
+**⚠️ 关键：校验消息前必须先写一个 `CMD_CONNECTION_COMPLETE_PKT(58) len=0 status=1` 头**
+（原版源码：`if (1 == window.reconnect_enabled) { u.writeUint16(CMD_CONNECTION_COMPLETE_PKT); u.writeUint32(0); u.writeUint16(1); }`；
+本机 `features` 含 `KVM_SESSION_RECONNECT`，故原版**每次都会**带这个 8 字节头）。
+此前自建连接固定得到 `status=0(INVALID_SESSION)`，根因就是漏了它 —— 补上后服务器不再拒绝 ✓
+
+**原版 viewer 实际发送的握手（Playwright 抓包，462 字节，逐字节核对）**
+```
+3a00000000000100            ← CMD_CONNECTION_COMPLETE_PKT(58) len=0 status=1
+1200b60100000100            ← CMD_VALIDATE_VIDEO_SESSION(18) len=438 status=1
+00 <token 129B> <client_ip 65B> <"domain/username" 129B> <"00-00-00-00-00-00" 49B> <server_ip 65B>
+0600 00000000 0000          ← CMD_RESUME_REDIRECTION(6) len=0 status=0
+```
+随后（同一会话内）依次发送：
+`CMD_DISPLAY_LOCK_SET(51) payload=[2]`、`CMD_GET_USER_MACRO(40)`、
+**`CMD_GET_WEB_TOKEN(21) len=35 payload=session`**（35 字符 web 会话串）、
+`CMD_POWER_STATUS(34)`、`CMD_GET_FULL_SCREEN(11) status=1`
+
+**服务器响应序列（实测）**
+```
+CMD_CONNECTION_ALLOWED(23) len=0 status=2          ← 连接后立即主动发
+CMD_VALIDATED_VIDEO_SESSION(19) len=2 status=2     ← 校验通过（status 2 表示部分权限/共存）
+CMD_KVM_SHARING(32) len=134 status=2               ← 有其它 KVM 会话时：KVM_REQ_PARTIAL，载荷=对方会话信息
+CMD_MEDIA_LICENSE_STATUS(53) / DISPLAY_CONTROL_STATUS(52) / GET_KBD_LED_STATUS(20) …
+CMD_VIDEO_PACKETS(25)                              ← 首个视频包 len≈30002（1024x768）
+CMD_KVM_MEDIA_INFO(38) / ACTIVE_CLIENTS(39) …
+```
+⚠️ 一个 WS 消息里可能**串接多个协议包**，解析必须按 `8+len` 循环切分（首次实测视频包被拆在 39793 字节的消息里）
+
+**主从协商（CMD_KVM_SHARING）**
+- `status` 低字节 = `STATUS_KVM_PRIV_*`（0 取消 / 1 请求 master / 2 等待 slave / 6 切换 master …），
+  高字节 = `KVM_REQ_*`（0 ALLOWED / 1 DENIED / 2 PARTIAL / 3 TIMEOUT / 6 BLOCKED_PARTIAL …）
+- 客户端把服务器 sharing 包的载荷 `btoa` 后存进 `sessionStorage.other_session_info`；
+  请求完整权限时回发 `CMD_KVM_SHARING`，`status = STATUS_KVM_PRIV_REQ_MASTER + (KVM_REQ_PARTIAL << 8)`，
+  payload = `atob(other_session_info)`
+- 原版界面此时显示「请求完整访问」按钮（可在 viewer 工具栏看到，实测存在 ✓）
+
 **握手时序（已实测：结构被服务器接受）**
 1. 连接后服务器**主动**发 `CMD_CONNECTION_ALLOWED(23) len=0 status=2`
    （status 2 = `STATUS_FIRST_KVM_SESSION`）
