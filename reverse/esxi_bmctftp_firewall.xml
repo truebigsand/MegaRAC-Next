@@ -1,0 +1,13 @@
+<ConfigRoot>
+  <service id='0901'>
+    <id>bmctftp</id>
+    <rule id='0000'>
+      <direction>inbound</direction>
+      <protocol>udp</protocol>
+      <porttype>dst</porttype>
+      <port>69</port>
+    </rule>
+    <enabled>true</enabled>
+    <required>false</required>
+  </service>
+</ConfigRoot>

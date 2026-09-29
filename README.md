@@ -1,6 +1,6 @@
 # MegaRAC-Next
 
-把一块技嘉 **MZ32-AR0**（AMD EPYC 7R32）主板上的 **AMI MegaRAC SP-X 12.41.11** BMC 管理界面，
+把一块技嘉 **MZ32-AR0**（AMD EPYC 7R32）主板上的 **AMI MegaRAC SP-X** BMC 管理界面，
 逆向后重制成了一个现代化的 Web UI —— 并附带一个**完全自研的 KVM 播放器**。
 
 原厂界面是十多年前的风格（Bootstrap 3 + jQuery、满屏英文长表），这个重制版用
@@ -8,6 +8,31 @@ Fastify + Vue 3 + Naive UI + ECharts 重写：界面简体中文、暗色优先�
 
 > 全部协议结论都来自对**自己这台机器的 BMC** 的实测。文档里标「实测」的都是真机验证过的结论，
 > 标「推断」的会明说；逆向过程、踩坑与救场记录见 [`docs/API.md`](docs/API.md)。
+
+## 固件安全升级（2026-09-30 已完成）
+
+这台 BMC 原本跑着 **12.41.11（2020-03-20）**，带着 **CVE-2024-54085**（CVSS 10.0，已被 CISA 列入
+KEV、有在野利用）以及 CVE-2023-34329/34330。现已升级到 **12.61.39（2025-07-02）**，三个漏洞随之关闭。
+
+升级过程相当折腾，因为**出带（web/Redfish）升级在这块板子上是坏的**——
+原厂向导按文件扩展名分派，把 `.bin` 当裸 BIOS 镜像处理，导致刷写组件识别不出来（浏览器控制台里
+`component: undefined`），`hpm/flash` 必然 500；Redfish `SimpleUpdate` 则直接无限挂起。
+技嘉官方指南也只写了带内（Linux/Windows/UEFI 跑 `gigaflash`）方式。
+
+最终走通的是**让 BMC 自己从 TFTP 拉镜像**（`fwimage_location` + `dwldfwimg`），
+完整流程、TFTP 服务的两个必须踩对的坑（69 端口回包、blksize 协商）、以及三条失败路径的
+逐条定位都记在 [`docs/API.md`](docs/API.md) 第 10 节。复现只需一条命令：
+
+```bash
+# 在一台 BMC 可达的 Linux 主机上（本次用的是它自己的 ESXi）：跑 TFTP 服务
+python3 reverse/tftp_server.py 69 /path/to/firmware   # 目录里放 rom.ima
+# 在能访问 BMC 的机器上：配置位置 → 触发下载 → 校验 → 刷写 → 监控到版本变化
+BMC_PASS=... node reverse/flash_via_tftp_full.mjs
+```
+
+配置**全部保留**（网络/用户/风扇档案/介质设置逐字段比对过），主机与虚拟机全程未受影响。
+需要注意的是新固件按发布说明**移除了 SSH 服务**，以后只能走 Web / Redfish / IPMI。
+
 
 ## 界面
 

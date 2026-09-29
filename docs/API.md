@@ -583,7 +583,7 @@ IUSB 头: 0..7 "IUSB    " | 8 major=1 | 9 minor=0 | 10 headerLength=32 | 11 chec
 **客户端启动序列**（取自 `libs/media/cdrom.js`）：
 1. 连 `/cd-server`
 2. 发 `AUTH(0xf2)`：载荷 = flag(0) + token（token 来自 `h5viewercfg.token` 或页面 SESSION_INFO）
-3. 发 `DEVICE_INFO(0xf8)`：载荷 = u32(3=H5Viewer) + 文件名 + ` `
+3. 发 `DEVICE_INFO(0xf8)`：载荷 = u32(3=H5Viewer) + 文件名 + `\0`
 4. 服务器回 `DEVICE_REDIRECTION_ACK`：`connectionStatus` 1=接受 / 3=登录失败 / 4=已被占用 /
    5=无权限 / 8=超过最大用户 / 9=无法连接
 5. 之后服务器下发 SCSI 命令（READ(10) 等），客户端用本地 ISO 文件按块应答；
@@ -626,76 +626,134 @@ IUSB 头: 0..7 "IUSB    " | 8 major=1 | 9 minor=0 | 10 headerLength=32 | 11 chec
 **⚠️ 运维提示**：该 BMC 在 2026-09-29 傍晚起 web 接口稳定变慢（认证请求 5~27 秒，
 IPMI 报硬件健康）。代理已做去重/优先级/排队上限以免雪崩；做写操作前请先确认响应时间。
 
-## 10. BMC 固件升级路径实测（2026-09-30）
+## 10. BMC 固件升级（2026-09-30 已完成：12.41.11 → 12.61.39）
 
-**目标**：12.41.11（2020-03-20）→ **12.61.39**（2025-08-04），修掉 CVE-2024-54085 / CVE-2023-34329/34330。
+**结果**：升级**成功**。`fw_ver 12.61.39`、`date Jul 2 2025`、`active_image 1`（换到另一个镜像 bank），
+CVE-2024-54085 / CVE-2023-34329/34330 随之修掉。**配置全部保留**（见文末对比），主机与虚拟机全程未受影响。
 
 **固件来源**：技嘉 MZ32-AR0 支持页 → `server_firmware_ast2500_AMI_12.61.39.zip`（104.87 MB）
-- `126139/fw/126139.bin`（66,060,552 B，md5 `84a19bbe0593636ad61a96fcd07b69c5`）= AMI BMC 镜像（web / 带内刷写用）
-- `126139/fw/rom.ima_enc`（66,060,424 B）= 加密镜像（`gigaflash` 带内刷写用）
+- `126139/fw/126139.bin`（66,060,552 B，md5 `84a19bbe0593636ad61a96fcd07b69c5`）
+- `126139/fw/rom.ima_enc`（66,060,424 B，md5 `83b1b3b409a5cdbc85a18daebe1d6b48`）
+  —— **两者前 66,060,424 字节完全相同**，`.bin` 只是尾部多了 128 字节（像是签名/校验块）。
+  镜像开头是裸 ARM 异常向量表 + `*ASTHwStrap#`，**不是 HPM 包**。
 - `126139/projects.txt` 列 1234 个平台，**`MZ32-AR0-00` 在列**（与本机 FRU 的板卡型号一致）
-- `BMC_Release_Note_126139.doc`（183 页 changelog）明确：**12.61.35 修 CVE-2024-54085**（`[redfish][merge] CVE-2024-54085 Removed condition to get the Host IP from request header`）；
-  **12.61.17 合并 CVE-2023-34329/34330** 等一批；12.61.39 附带 Redfish 1.7→1.8。
+- `BMC_Release_Note_126139.doc`（183 页 changelog）：**12.61.35 修 CVE-2024-54085**；
+  **12.61.17 合并 CVE-2023-34329/34330**；12.61.39 附带 Redfish 1.7→1.8 与**移除 SSH 服务**。
+- ⚠️ 技嘉官方指南（`GBT_BMC_Firmware_Upgrade_User_Guide_v007`）**只写带内方式**
+  （Linux/Windows/UEFI 跑 `gigaflash`），出带（web/Redfish）**官方没有任何文档** —— 这也解释了为什么路这么难走。
 
-### 三条路径与实测结果
+### ✅ 唯一实测走通的路径：让 BMC 自己从 TFTP 拉镜像
 
-**① Redfish SimpleUpdate（最标准，但需 BMC 能反向拉取镜像）**
-- 参数规格来自 BMC 自己宣告的 `GET /redfish/v1/UpdateService/SimpleUpdateActionInfo`：
-  `ImageURI`(必填) / `TransferProtocol`(必填，允许 **HTTP|FTP**) / `User` / `Password` /
-  `UpdateComponent`(BMC|BIOS|MB_CPLD|BPB_CPLD) / `ResetBMC`
+```
+PUT  /api/maintenance/fwimage_location     {protocol_type:'tftp',
+                                            server_address:'<你的服务器>',
+                                            image_name:'rom.ima', retry_count:3}
+PUT  /api/maintenance/flash                {flash_type:'BMC'}        ← body 必须带 flash_type！
+PUT  /api/maintenance/firmware/dwldfwimg   {PROTO_TYPE:1}            ← 1=TFTP，让 BMC 去拉
+GET  /api/maintenance/firmware/dwldfwstatus-progress                ← 下载进度，完成时 state=2 progress=Complete
+GET  /api/maintenance/firmware/verification?flash_type=BMC          ← 校验，返回 verification_status 位掩码
+PUT  /api/maintenance/firmware/upgrade     {flash_type:'BMC',
+                                            preserve_config:1,       ← 1=保留全部配置
+                                            flash_status:1}          ← 1=CONS_FORCE_FLASH 整镜像
+GET  /api/maintenance/firmware/flash-progress                        ← "Flashing... N% done" → "Completed."
+GET  /api/maintenance/fwupdate_keepalived                            ← 每 10s 保活，超 90s BMC 会放弃
+```
+
+实测时间线：准备 75 s → TFTP 传 66 MB 用 90 s（0.70 MB/s）→ 校验 25 s → 刷写 4.5 分钟 → BMC 重启约 2 分钟。
+
+**TFTP 服务器有两个必须踩对的点**（`reverse/tftp_server.py` 已实现，可直接用）：
+
+1. **必须从监听端口（69）回包**。用临时端口回包（TFTP 标准允许、多数实现也接受）时，
+   这台 BMC 的客户端会把应答**全部忽略**：表现为它每 10 秒重发一次同样的 RRQ，服务端永远卡在「块 1 无 ACK」。
+2. **要支持 blksize 协商**（RFC 2348）。BMC 会在 RRQ 里带 `blksize=1024`，按它给的值走。
+   用默认 512 字节块传 66 MB 要 12.9 万个块，BMC 侧会在中途放弃并从头重来（实测走到 24% 就重来）。
+
+**为什么必须让 BMC 来拉、而不是我们传上去**：见下面三条失败路径。
+
+### ❌ 三条走不通的路径（都已定位到具体原因）
+
+**① Redfish SimpleUpdate —— POST 无限挂起**
+- 参数规格来自 `GET /redfish/v1/UpdateService/SimpleUpdateActionInfo`（`ImageURI` / `TransferProtocol` 必填，
+  允许 HTTP|FTP；另有 `User`/`Password`/`UpdateComponent`/`ResetBMC`）
 - target 是 **`/redfish/v1/UpdateService/Actions/SimpleUpdate`**（AMI 用短形式，写成 `UpdateService.SimpleUpdate` 会 404）
-- 实测：`POST` → **202 Accepted** + 创建 `/redfish/v1/TaskService/Tasks/1`，消息 "Device is prepareing flash firmware"，
-  但任务随即失败：**BMC 需主动连接 ImageURI 所在服务器**，本机 Windows 防火墙（非管理员无法放行入站）挡掉 → `firmware update is failed`。
-  → 把镜像放到 BMC 可达的 HTTP 服务器上，这条是最干净的路径。
+- 实测 3 次（含一次 BMC 冷复位后、含最小 body 与带 `UpdateComponent`/`ResetBMC` 的 body）：
+  **POST 无限挂起，既不建任务、BMC 也从未发起连接**。BMC 侧 `fwupdate_check=0`、`flash-progress` 显示空闲，
+  即它自认为什么都没发生。→ 这条 API 在这个固件版本上不可用。
 
-**② 经典 web API（上传式）**
+**② 经典 web API 上传 —— 上传会「秒拒」或「收到后校验失败」**
+- `PUT /api/maintenance/flash` 的 body **必须是 `{flash_type:'BMC'}`**（发空 `{}` 时后续上传必被秒拒）。
+  这个细节是从原版 `source.min.js` 的 `downloadstart` 里读出来的 —— 官方 JS 就是带 `flash_type` 发的。
+- 即便发对了：上传 66 MB 要 151 s，之后 `flash-progress` 报 **`Image Verification / Failed`**，
+  且 `verification` 返回 500 `code 1306`。
+- **刷写区是「一次性」的**：一次校验失败之后，后续上传一律 0 秒被拒（`{"cc":-1}`），
+  **连 IPMI 冷复位都清不掉**（该状态似乎持久化在 flash 里）。
+  之前所有「请求形态不对」的判断都源于此——实际是状态问题，不是形态问题。
+- 结论：这条路在我们手上没有可用的镜像格式（`126139.bin` 与 `rom.ima_enc` 都被判校验失败）。
+
+**③ HPM 路径 —— 原厂向导自己都走不通**
 ```
-PUT  /api/maintenance/flash                        {}                     进刷写模式
-POST /api/maintenance/firmware                     multipart fwimage=镜像   上传
-GET  /api/maintenance/firmware/verification?flash_type=BMC                校验（返回 verification_status 位掩码）
-PUT  /api/maintenance/firmware/upgrade             {flash_type:'BMC',
-     preserve_config:1, flash_status:1}                                   刷写（1=CONS_FORCE_FLASH 整镜像）
-GET  /api/maintenance/firmware/flash-progress                             进度
-GET  /api/maintenance/fwupdate_keepalived                                 每 10s 保活，超 90s BMC 放弃
+PUT  /api/maintenance/hpm/updatemode        {}  → {unique_id}
+PUT  /api/maintenance/hpm/preparecomponents {FWUPDATEID, COMPONENT_ID, COMPONENT_DATA_LEN, IS_MMC}
+POST /api/maintenance/hpm/biosfw            multipart fwimage → 200（上传成功）
+PUT  /api/maintenance/hpm/flash             {COMPONENT_ID, COMPONENT_DATA_LEN, FWUPDATEID, SECTION_FLASH}
+PUT  /api/maintenance/hpm/exitupdatemode
 ```
-- 实测：**上传被秒拒**——未进刷写模式时返回 HTML `Error: Can't set options.`；进了刷写模式后返回 `{"cc":-1}`。
-  换字段名/加 XHR 头/1KB 小文件均复现，故非尺寸问题，请求形态上仍有未解明的差异。
-- ⚠️ 中途放弃会留下 **"Firmware update is in progress"（code 17000）**：登录被拒，约 45~90 秒自行恢复；
-  必要时用 IPMI 冷重置（`reverse/ipmi_reset_bmc.py`）。
-- `CONS_FORCE_FLASH=1`、`CONS_SECTION_CMP_FLASH=2`、`CONS_VERSION_CMP_FLASH=4`、`CONS_FULL_FLASH=16`（verification 位掩码）。
+- **用 Playwright 驱动原厂 UI + 真镜像实测**：`updatemode` 200 → `preparecomponents` 200 →
+  `biosfw` 上传 200 → **`hpm/flash` 500** `{"error":"Error in HPM Finish Firmware Upload","code":1373}`。
+  浏览器控制台同时打出 **`Starting update for component: undefined`** —— 组件根本没识别出来。
+- 根因（从 JS 读出）：向导按**文件扩展名**分派——
+  `"hpm" == 扩展名` → 走 HPM 组件解析（`RAWBIOS=false`）；
+  `"bin" == 扩展名` → **当成「裸 BIOS 镜像」**（`RAWBIOS=true`），用 `HPM_BIOS_CID=2` 去刷一个不存在的 BIOS 组件。
+  我们的镜像是裸 `.bin`，于是必然落到错误分支；而改名成 `.hpm` 后组件表为空（镜像本来就不是 HPM 包）。
+- `hpm/componentversions` 只有 `[{"id":0,...,"current_version":"0.0.0"}]`，组件表与实际镜像不匹配。
+- 结论：**不是我们操作错，是原厂向导在这个固件上就是坏的**——这很可能就是这块板子从 2020 年起一直没升级的原因。
 
-**③ HPM 路径（给 BOOT/APP/BIOS/ME 组件的）**
-```
-PUT  /api/maintenance/hpm/updatemode               {}                     → {unique_id}
-PUT  /api/maintenance/hpm/preparecomponents        {FWUPDATEID, COMPONENT_ID,
-                                                    COMPONENT_DATA_LEN, IS_MMC}
-POST /api/maintenance/hpm/biosfw                   multipart fwimage      上传
-PUT  /api/maintenance/hpm/flash                    {COMPONENT_ID, COMPONENT_DATA_LEN,
-                                                    FWUPDATEID, SECTION_FLASH}
-GET  /api/maintenance/hpm/verifyimagestatus → PUT /api/maintenance/hpm/activatecomponents {COMPONENT_ID} → PUT /api/maintenance/hpm/exitupdatemode
-```
-- 实测（由原厂向导驱动）：`updatemode` 200 → `preparecomponents` 200 → **`biosfw` 上传 63 MiB 成功（200）**
-  → `hpm/flash` **500** `{"error":"Error in HPM Finish Firmware Upload","code":1373}`
-- 原因找到：`GET /api/maintenance/hpm/componentversions` 返回 `[{"id":0,"vers_id":null,"current_version":"0.0.0"}]`
-  → **本机没有 HPM 组件**，HPM 路径不适用于 BMC 固件（`hpm/freemem` 显示 138 MB 可用，空间不是问题）。
+### 新固件带来的行为变化
 
-### ⚠️ 原厂向导自身有 bug（很可能就是它一直没被升级的原因）
+| 变化 | 说明 |
+|---|---|
+| **SSH 服务被移除** | 发布说明原文 `[feature] Remove SSH service.`；`/api/settings/services` 里 ssh 条目消失（原来 secure_port=22）。以后只能走 Web/Redfish/IPMI |
+| **Redfish 1.7 → 1.8** | `@odata.type` 从 `Message.v1_0_7` 变 `v1_0_8`；`firmware-info` 新增 `sku_ver`/`sdr_ver` 字段 |
+| **Redfish 子资源访问不稳定** | 升级后探测中 `Managers/Self` 时而 200、其余资源时而 401「the service was denied access」时而 403（lighttpd HTML），同一会话内也不一致。经典 web 通道始终正常，本项目不依赖 Redfish，故未深究，留作后续观察项 |
+| **配置保留** | 见下 |
 
-`#maintenance/firmware_update_wizard` 里「BMC 固件更新」的 **「准备烧录…」按钮点击无效**：
-其处理函数读 `$("#fwudate_type_selected").val()`，而该元素在 12.41.11 的模板里**根本不存在**，
-读到 undefined 后静默退出（无报错）。手工注入该元素后仍未走通，说明还有别的前置条件。
+**配置保留对比**（`reverse/config_diff.mjs`，逐字段递归比对）：
 
-### 建议的升级顺序
+| 配置 | 结果 |
+|---|---|
+| 网络（静态 192.168.0.200/24、网关、MAC、IPv6） | ✅ 保留（仅 `ipv6_gateway` 由 `::` 变为自动填的链路本地地址） |
+| 用户（admin 及各槽位权限） | ✅ 保留（仅 `creation_time` 随系统时钟变化） |
+| 风扇档案（mode=CPU_TEMP、曲线集合） | ✅ 保留（曲线值一致；新固件风扇传感器列表少一项 `190`） |
+| 介质设置（general / remotesession / adviser） | ✅ 完全一致 |
+| 服务（端口、超时、最大会话数） | ✅ 保留（ssh 条目按新特性移除） |
+| 日期时间（NTP、时区） | ✅ 保留（仅 timestamp 是时钟值） |
 
-1. **把 `126139.bin` 放到 BMC 可达的 HTTP 服务器**（同网段、无需认证），用 Redfish SimpleUpdate 刷 —— 最标准、可脚本化。
-   本机若要用这条：需管理员放行入站，例如
-   `netsh advfirewall firewall add rule name="bmcfw" dir=in action=allow protocol=TCP localport=8899`
-2. 浏览器里手工走原厂向导（人工点击有时能过，自动化过不去）。
-3. 技嘉官方 SOP 的带内方式：主机引导到 **UEFI Shell** 跑 `gigaflash.efi` + `rom.ima_enc`（需重启主机，会影响虚拟机）。
-4. 刷写前先备份配置（`#maintenance/backup_config`）；本次已把关键设置快照到 `reverse/pre_upgrade_snapshot.json`
-   （网络/用户/服务/风扇档案/介质设置，供重置后恢复）。
+**升级后回归**：证书/登录、传感器、SEL、电源状态、会话表（0）、风扇模式、KVM（自研中继：握手→出流→
+收到 1024×768 完整帧→在线客户端列表）全部正常。
 
-**当前状态（2026-09-30）**：升级**未完成**，BMC 仍为 12.41.11 且工作正常（会话表 0、KVM/Redfish 可用）。
-已实测的脚本：`reverse/upgrade_bmc_firmware.mjs`（经典路径）、`reverse/upgrade_bmc_firmware_hpm.mjs`（HPM 路径）、
-`reverse/redfish_simpleupdate_flash.mjs`（Redfish）、`reverse/pre_upgrade_backup.mjs`（快照+备份）、
-`reverse/wait_bmc_recover.mjs`（刷写模式恢复等待）。
+### 复现所需脚本
+
+| 脚本 | 用途 |
+|---|---|
+| `reverse/tftp_server.py` | **TFTP 服务**（69 端口回包 + blksize 协商，两个坑都已处理）。放 ESXi/任意 Linux 上跑 |
+| `reverse/flash_via_tftp_full.mjs` | **一条命令走完**：配置位置 → 准备 → 触发下载 → 校验 → 刷写 → 监控到版本变化 |
+| `reverse/pre_upgrade_backup.mjs` | 刷前配置快照（写 `reverse/pre_upgrade_snapshot.json`） |
+| `reverse/config_diff.mjs` | 刷后逐字段对比配置是否保留 |
+| `reverse/monitor_flash.mjs` / `wait_bmc_recover.mjs` | 刷写期间监控、BMC 重启等待 |
+| `reverse/esxi_helper.cjs` | 从 Windows 操作 ESXi（`exec` / `put` / `get`）；⚠️ 路径要用 `MSYS_NO_PATHCONV=1`，否则 Git Bash 会把 `/vmfs/...` 改写成 Windows 路径 |
+| `reverse/ipmi_reset_bmc.py` | IPMI 冷复位（web 通道自救不了时用） |
+| `reverse/tftp_pull_flash2.mjs` | 只观察不刷写：持续轮询下载后的状态机（调试用） |
+
+### 关键教训
+
+1. **BMC 处在 `Firmware update is in progress`（code 17000）时会拒绝登录**，且这是**持久状态**：
+   一次刷写准备+失败的上传会留下它，自清需要 2~5 分钟，期间 web 栈还会重启几次（表现为 ECONNRESET/ECONNREFUSED/超时）。
+   所以重试之间必须留够时间，别以为是网络问题。
+2. **别用短超时掐断 BMC 的操作**。第一次 SimpleUpdate 我在 120 s 处 abort，之后该 API 再没成功建过任务。
+3. 这套 BMC 的 web 栈**本身就间歇性慢/挂**（`UpdateService`、`Chassis`、`TaskService` 都各挂过 20~90 s），
+   写操作前先确认响应时间。
+4. 判断「请求形态对不对」时，**先去读原版 `source.min.js`**：头部名（`X-CSRFTOKEN`）、
+   body 字段（`flash_type`）、流程顺序（准备→上传→校验→升级）、保活节奏都在里面，比自己猜快得多。
+5. 本机（Windows）**入站 TCP 全被拦**（连 3389 这种既有放行规则又在监听的端口从外部也连不上，
+   非管理员查不到原因，无第三方安全软件）。所以任何「让 BMC 来拉」的方案都别指望这台机器，
+   改把镜像放到 BMC 同网段的其他主机上（本次用的是它自己的 ESXi 主机，走 ESXi 自带 Python + 自定义防火墙规则集）。
