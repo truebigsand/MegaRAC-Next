@@ -154,11 +154,8 @@ export class BmcClient {
     return this.run(() => this.authorized('GET', path));
   }
 
-  /**
-   * 写操作转发（POST/PUT/DELETE）。
-   * ⚠️ 项目纪律：开发阶段不对真实 BMC 触发写操作——
-   * 这条通道本身已实现，但调用方（前端按钮）上线验证前保持不接通。
-   */
+  /** 写操作转发（POST/PUT/DELETE），由前端确认对话框把关 */
+  
   send(method: 'POST' | 'PUT' | 'DELETE', path: string, json?: unknown): Promise<BmcResult> {
     return this.run(() => this.authorized(method, path, { json }));
   }
@@ -166,4 +163,23 @@ export class BmcClient {
   get sessionId(): number {
     return this.racSessionId;
   }
+}
+
+/**
+ * 取 BMC 上的静态资源（KVM 解码 worker 等）。
+ * 这些文件在 BMC 上不需要登录即可下载，直接走同一套免校验 Agent。
+ */
+export async function fetchBmcAsset(
+  path: string,
+): Promise<{ status: number; contentType: string; body: Buffer }> {
+  const res = await undiciFetch(BMC_BASE + path, {
+    dispatcher: agent as unknown as Dispatcher,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  const body = Buffer.from(await res.arrayBuffer());
+  return {
+    status: res.status,
+    contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+    body,
+  };
 }

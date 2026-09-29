@@ -3,6 +3,9 @@ reverse/source.min.js
 reverse/viewer.min.js
 reverse/styles.min.css
 reverse/viewer.html
+# KVM 静态资源（解码 worker / 协议库）同样是 AMI 版权产物，只本地分析，不入库
+reverse/kvm_assets/
+reverse/kvm_capture_reference.txt
 
 # Node
 node_modules/

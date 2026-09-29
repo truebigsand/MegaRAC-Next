@@ -1,3 +1,5 @@
+// ⚠️ 用完务必注销：该 BMC 的 web 会话上限很小（148），泄漏会占满后
+// 导致登录被拒（Maximum number of sessions already in use）且 KVM 升级被降级。
 // 清理 BMC 泄漏会话：按服务列出会话并逐个 DELETE（原版"服务"页的同一套接口）
 //   GET    /api/settings/service-sessions?service_id=<id>
 //   DELETE /api/settings/service-sessions/<会话id>

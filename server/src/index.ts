@@ -5,6 +5,7 @@ import { BmcClient, BmcSessionExpiredError } from './bmc.js';
 import { createSession, dropSession, getSession, sessionCount, allSessions } from './sessions.js';
 import { SqliteHistoryStore } from './history/sqlite.js';
 import { HistorySampler } from './history/sampler.js';
+import { registerKvm, closeAllKvm } from './kvm-route.js';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
@@ -133,7 +134,7 @@ app.get('/bmc/*', async (req, reply) => {
   }
 });
 
-// ---------- BMC 写操作通道（已实现；前端在验证完成前不接通） ----------
+// ---------- BMC 写操作通道 ----------
 
 async function forwardWrite(
   req: import('fastify').FastifyRequest,
@@ -169,6 +170,18 @@ app.delete('/bmc/*', (req, reply) => forwardWrite(req, reply, 'DELETE'));
 
 app.get('/api/health', async () => ({ ok: true, browserSessions: sessionCount() }));
 
+// ---------- KVM ----------
+
+await registerKvm(app);
+
 app.listen({ host: HOST, port: PORT }).then(() => {
   app.log.info(`MegaRAC-Next 代理已启动 http://${HOST}:${PORT}`);
 });
+
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    // 退出前主动释放 KVM 主控，否则会在 BMC 侧留下占用会话槽的僵尸
+    closeAllKvm();
+    process.exit(0);
+  });
+}

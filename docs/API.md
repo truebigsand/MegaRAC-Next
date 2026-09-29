@@ -346,11 +346,98 @@ CMD_KVM_MEDIA_INFO(38) / ACTIVE_CLIENTS(39) …
    （原版在 `cmdOnVideoPackets` 里跳过 2 字节后按固定偏移读 72 字节帧头，`CompressSize` 决定该帧负载长度）
 6. 解码：原版用 Web Worker **`./libs/kvm/ast/decode_worker.js`**（可从 BMC 直接下载复用）
 
+### 自建 KVM 客户端（本项目已实现并真机验证，2026-09-29）
+
+**架构**：服务端（Node）承担握手与字节中继，浏览器只做「重组帧 + 解码 + 渲染 + 输入」。
+- 服务端用 `ws` 库以 `rejectUnauthorized:false` 连 `wss://<bmc>/kvm`（自签证书），
+  **必须显式带 `Origin: https://<bmc>`**（缺省 Node 不发 Origin 会被拒）
+- 浏览器 `<->` 代理的 `/api/kvm`：二进制帧 = IVTP 协议字节，文本帧 = JSON 状态/键鼠指令
+- 解码 worker 由服务端从 BMC 取回并缓存，经 `/api/kvm/decoder.js` 下发（浏览器用 Blob URL 起经典 worker）
+
+**⚠️ 视频包与帧头偏移（实测解出，纠正了此前"72 字节帧头"的说法）**
+```
+包: cmd u16 | len u32 | status u16 | payload
+payload[0..2)      跳过（2 字节）
+payload[2..88)     帧头 86 字节，其中：
+                    [4..5] 源宽  [6..7] 源高   (u16 LE)
+                    [13..14] 目标宽 [15..16] 目标高
+                    [44] JPEGTableSelector  [45] JPEGYUVTableMapping
+                    [47] AdvanceTableSelector  [53] RC4Enable  [55] Mode420
+                    [71..74) CompressSize（小端；原版 e[72] 越界恒为 0，实际只 3 字节有效）
+payload[88..len)   该帧压缩数据
+后续包(同帧):      数据自 payload[2] 起，长度 len-2
+帧结束条件:        累计字节数 == CompressSize
+```
+**一帧可能整帧在一个包内**（实测 1024x768 的静态画面：CompressSize=39252、本包数据正好 39252）。
+
+**⚠️ BMC 的 WS 是字节流，不是"一消息一包"**：包可跨多条消息、一条消息也可含多个包。
+必须像原版那样用累积缓冲按 `8 + len` 流式消费（服务端与浏览器两侧都要这么做）。
+
+**⚠️ 解码 worker 的输出缓冲必须跨帧持续存在**：AST2100 有 skip 码（块未变化时沿用上一帧像素），
+每帧新建空白 `ImageData` 会把未变化区域抹成黑块（本项目的实际 bug）。
+正确做法：分辨率变化时用 `{cmd:'resolution_changed', imageBuffer}` 送一次同尺寸缓冲，
+之后每帧只送 `{header, buffer}`（`buffer` = 压缩字节按 4 字节打包成的 `Int32Array`），
+worker 回 `{cmd:'draw', ibuf}` 时 `putImageData`。
+
+**主控（master）与键鼠权限 —— 最关键的坑**
+- `CMD_VALIDATED_VIDEO_SESSION(19)` 的 **payload[1] 是会话序号**：`0` = 我们是主控（键鼠有效），
+  `>0` = 已存在别的会话占着主控，我们只是从属 —— **画面照常推送，但按键/鼠标全部无效**。
+  现象极具迷惑性：状态显示"传输中"、视频正常，只有输入不生效。
+- 从属申请完全控制：发 **`CMD_SET_NEXT_MASTER(0x32) len=0 status=0`**（原版 `#request_full` 按钮的行为）。
+  主控侧收到后原版弹窗询问，用户同意则回
+  `CMD_KVM_SHARING(32)` 与 `CMD_SET_NEXT_MASTER(50)`，status = `REQ_MASTER(1) | (ALLOWED<<8)`、payload 回带申请方信息；
+  主控已消失则由 BMC 超时后把主控权交给申请方。
+- 本项目：自身为主控时**自动同意**他人的完全控制申请（同机同用户的其它标签页/原版 viewer）。
+- **重连竞态**：上一个 KVM 连接断开后 BMC 需要数秒才释放主控。
+  新连接若抢在这之前建立就会拿到序号 >0 变成从属。
+  做法：替换旧连接时先发 `CMD_STOP_SESSION_IMMEDIATE(8)` 并**等旧 socket 真正关闭**再建新连接。
+
+**键鼠报文（USB over IP，逐字节与原版一致，见 `reverse/verify_hid_layout.mjs`）**
+```
+IVTP: cmd=0x01 | len = 32 + 1 + 报告长度 | status=0
+USB 头 32B: "IUSB    "(8) | major u8=1 | minor u8=0 | hdrSize u8=32 | 校验和 u8
+            | dataLen u32 LE = 1 + 报告长度 | 0 | 设备(0x30 键盘/0x31 鼠标)
+            | 协议(0x10/0x20) | 方向 0x80 | 设备号 2 | 接口号(键盘0/鼠标1) | 0 0
+            | 序号 u32 LE | 0 0 0 0
+后接 1 字节"报告长度" + 报告内容：
+  键盘 8B: [修饰键位掩码][1][6 个 HID 键码]
+  鼠标绝对 6B: [按键掩码][x u16 LE 0..32767][y u16 LE][滚轮 int8]
+  鼠标相对 4B: [按键掩码][dx int8][dy int8][滚轮 int8]   ← 长度字节原版误写为 6，需照抄
+校验和 = USB 头 32 字节求和取负（8 位），写在头上偏移 11
+```
+鼠标模式取 `/api/settings/media/adviser` 的 `mouse_mode`（本机 = 2 绝对定位）。
+
 **其他**
 - 键鼠/加密/IPMI 隧道同在这条 socket（`CMD_SEND_HID_PACKET`、`CMD_IPMI_REQ_COMMAND`、`CMD_ENABLE_ENCRYPTION`…）
-- 主从协商：`CMD_KVM_SHARING(32)` + `STATUS_KVM_PRIV_*` / `KVM_REQ_*` 状态机
 - JNLP 路径：`GET /api/remote_control/get/kvm/launch` → `jviewer.jnlp`（Java Web Start），实测 403（KVM 会话槽计数器满）
-- **实测确认原版 viewer 可用**：从原版"远程控制"页点「启动 KVM」能连上并显示画面（当前主机无视频输出 → 黑屏）
+- **实测确认原版 viewer 可用**：从原版"远程控制"页点「启动 KVM」能连上并显示画面
+
+**真机验证记录（2026-09-29，主机为 MZ32-AR0 上的 ESXi 8.0 DCUI，1024x768）**
+- 画面：新 UI 的 KVM 页渲染出真实 ESXi 控制台（版本/CPU/内存/管理地址文字清晰可读）
+- 键盘：`F2` 唤出 DCUI「Authentication Required」登录框，输入 `root` 可见回显（截图存档）
+- 鼠标：报文正确送达（服务端日志可见 btn/坐标/滚轮），但 **ESXi DCUI 本身不支持鼠标**，
+  故无法在该画面观察指针移动；报文结构已与原版逐字节核对一致
+
+### ⚠️⚠️ web 会话表被占满会让 KVM 静默降级（2026-09-29 踩坑）
+
+BMC 的 web 会话上限只有 **148**（`/api/settings/services` 的 `maximum_sessions`），
+且**脚本泄漏会话不会自愈到零**：每个登录都占一格，不注销就留着（超时 1800s 后才回收）。
+
+表满之后的表现**极具误导性**：
+- 新登录被拒：`{"error":"Maximum number of sessions already in use","code":15000}`
+- `/kvm` 的 WebSocket 升级**看起来成功**：先回 `HTTP/1.1 101 Switching Protocols`，
+  紧接着在同一连接里又发一个 **完整的 `HTTP/1.1 200 OK` 响应**（`Content-Encoding: gzip`、
+  `X-Frame-Options`、`Cache-Control: no-store...`、CSP 等，是 web 服务的回退页面）。
+  客户端按 WS 帧解析这些 ASCII 字节就会报
+  `Invalid WebSocket frame: RSV1 must be clear`（RSV1 位其实是正文里的随机位），
+  极易误判成 permessage-deflate 协商问题——**实测四种 deflate 报价全都报同样的错**，
+  因为根本不是扩展协商的事。
+
+排查顺序建议：先 `/api/settings/service-sessions` 看 web 会话数，
+再确认 `/kvm` 升级后第一个字节是 `0x48`('H'，HTTP 回退页) 还是二进制帧头。
+恢复：清掉孤儿会话（本项目 `reverse/clear_bmc_sessions.mjs`）或等 30 分钟超时回收。
+
+**本项目已做的加固**：`reverse/` 下的探针脚本用完即注销；代理侧一个浏览器会话只持一条 BMC 会话。
 
 ### ⚠️ 会话计数器虚高（重要运维发现，2026-09-29）
 `/api/settings/services` 的 `active_session` 与实际会话表**不一致**：
