@@ -552,3 +552,55 @@ USB 头 32B: "IUSB    "(8) | major u8=1 | minor u8=0 | hdrSize u8=32 | 校验和
 - 协议研究背景：[Nozomi Networks — MegaRAC SP-X 协议研究](https://www.nozominetworks.com/blog/vulnerabilities-in-bmc-firmware-affect-ot-iot-device-security-part-2)
 - 视频解码：原版 `viewer.min.js` 通过 Web Worker `./libs/kvm/ast/decode_worker.js` 解码；帧头含 `CompressionMode / JPEGScaleFactor / JPEGTableSelector / VQMode / RC4Enable`，编码器侧有 JPEG 结构（DHT/DQT、maxJPEGSize），`VIDEO_PACKET_SIZE=373`、`HDR_SIZE=8`
 - 自研路线：Node 侧 ws 客户端连 wss/kvm → 复刻 createHeader 帧协议（`CMD_CONNECTION_COMPLETE_PKT` 74 字节会话信息 + `CMD_VALIDATE_VIDEO_SESSION` 校验）→ 逐帧取 `CMD_VIDEO_PACKETS` 载荷 → Canvas 渲染；键鼠用 `CMD_SEND_HID_PACKET`
+
+## 8. 虚拟介质（Image Redirection）逆向结论 —— 2026-09-29
+
+**协议已摸清（本地 ISO 重定向走 iusb over WebSocket）**，但**本机 BMC 未授权该功能**，
+故未落地实现。留档备查：
+
+**通道**：`wss://<bmc>/cd-server`（单口模式，实测 101 升级成功；非单口是 `:<kvm_port>/`）。
+与 KVM 一样是**字节流**，帧格式：
+```
+[IUSB 头 32B][dataPacketLength 字节]     ← length 在头内偏移 12（u32 LE）
+IUSB 头: 0..7 "IUSB    " | 8 major=1 | 9 minor=0 | 10 headerLength=32 | 11 checksum
+         12..15 dataPacketLength | 16 serverCaps | 17 deviceType=0x05 | 18 protocol=0x01
+         19 direction(0x80=fromClient) | 20 deviceNo | 21 interfaceNo | 22 clientData
+         23 instance | 24..27 sequenceNo | 28..31 key
+```
+**SCSI 数据区**从包内偏移 32 开始：opcode 在 **偏移 41**（= 数据区偏移 9），LBA 在 43；
+`DEVICE_REDIRECTION_ACK(0xf1)` 的 `connectionStatus` 在 **偏移 62**（= 数据区偏移 30），
+其后 39 字节是占用方 IP。
+
+**客户端启动序列**（取自 `libs/media/cdrom.js`）：
+1. 连 `/cd-server`
+2. 发 `AUTH(0xf2)`：载荷 = flag(0) + token（token 来自 `h5viewercfg.token` 或页面 SESSION_INFO）
+3. 发 `DEVICE_INFO(0xf8)`：载荷 = u32(3=H5Viewer) + 文件名 + ` `
+4. 服务器回 `DEVICE_REDIRECTION_ACK`：`connectionStatus` 1=接受 / 3=登录失败 / 4=已被占用 /
+   5=无权限 / 8=超过最大用户 / 9=无法连接
+5. 之后服务器下发 SCSI 命令（READ(10) 等），客户端用本地 ISO 文件按块应答；
+   另有 `KEEP_ALIVE(0xf3)`、`OPCODE_EJECT(0x1b)`、`OPCODE_KILL_REDIR(0xf6)`、
+   `MEDIA_SESSION_DISCONNECT(0xf7)`
+6. 客户端侧 SCSI 模拟参考实现：`libs/media/cdimage.js`（含 ISO/UDF 校验、READ CAPACITY、
+   按块读文件）
+
+**为什么本机做不了（实测证据）**：
+- 介质支持开关是 **license 门控**（BMC UI 里 `data-feature="LMEDIA"/"RMEDIA" data-license="LMEDIA"`）
+- `PUT /api/settings/media/general {"local_media_support":1}` 返回 200 并回显 1，但**再次 GET 仍是 0**（固件拒绝持久化）
+- `GET /api/settings/media/active_redirections` → 500 `{"error":"Error while getting Media Info","code":16416}`
+- `/cd-server` 握手：有时无任何响应，有时回 ACK 但状态非「接受」
+- `remotesession` 里 `remote_media_enable: 0`、`local_media_enable: 4`
+
+**结论**：需要 AMI 的 LMEDIA/RMEDIA 授权才能启用。已留下探针脚本
+`reverse/media_probe.mjs`（通道探测）与 `reverse/media_handshake_probe.mjs`（auth/device-info 握手）。
+
+## 9. 设置页写操作实测（2026-09-29）
+
+| 对象 | 结论 |
+|---|---|
+| **用户** | ✅ 已实测通过。新建/修改 = `PUT /api/settings/users/<id>`，**必须以 GET 到的槽位对象为底再覆盖改动字段**（字段不全 → 500），带 `UserOperation`(0=新增 1=修改)、`confirm_password`、`password_size`、`accessByChannel`、`privilegeByChannel`；删除 = `DELETE /api/settings/users/<id>`，body `{snmp_status,id}`（PUT 清空会 500）。用户是**固定槽位**模型（1=anonymous、2=admin、3..N 空），新建=占用空槽 |
+| **服务** | ❌ 未通过。照抄 BMC UI 的字段集（state/interface_name/两个端口/time_out/maximum_sessions/active_session）PUT，BMC 回 500 `{"error":"Error setting service configuration","code":1198/1199}`；换用 `service_id` 作 URL 同样 500。疑似需要「扩展权限」。UI 已保留但标注未验证，失败不会改动配置 |
+| **日期时间** | ⚠️ 未验证（BMC 当时单请求 15~27 秒）。已按「整体回写」实现 |
+| **网络** | ⚠️ 刻意不做实测（写错会失联，只能到机器前救）。UI 有强警告 + 格式校验 + 二次确认 |
+
+**⚠️ 运维提示**：该 BMC 在 2026-09-29 傍晚起 web 接口稳定变慢（认证请求 5~27 秒，
+IPMI 报硬件健康）。代理已做去重/优先级/排队上限以免雪崩；做写操作前请先确认响应时间。

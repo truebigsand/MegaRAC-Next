@@ -169,8 +169,11 @@ async function deleteUser(u: BmcUser) {
 // ---------- 服务 ----------
 const serviceDialog = ref(false);
 const serviceForm = ref({ id: 0, service_name: '', state: 1, time_out: 1800, maximum_sessions: 148 });
+/** BMC 给的服务对象，写回时整体带上（端口/接口等字段它也要） */
+const serviceBase = ref<Record<string, unknown> | null>(null);
 
 function openServiceEdit(sv: BmcService) {
+  serviceBase.value = { ...(sv as unknown as Record<string, unknown>) };
   serviceForm.value = {
     id: sv.id,
     service_name: sv.service_name,
@@ -183,11 +186,21 @@ function openServiceEdit(sv: BmcService) {
 
 async function saveService() {
   const f = serviceForm.value;
-  const ok = await submitWrite('保存服务', `settings/services/${f.id}`, {
-    state: f.state,
-    time_out: f.time_out,
-    maximum_sessions: f.maximum_sessions,
-  });
+  const base = serviceBase.value ?? {};
+  // 字段照 BMC 自己的 services 保存逻辑：state/interface_name/两个端口/time_out/
+  // maximum_sessions/active_session 一起回写
+  const ok = await submitWrite(
+    '保存服务',
+    `settings/services/${base.id ?? f.id}`,
+    {
+      ...base,
+      state: f.state,
+      time_out: f.time_out,
+      maximum_sessions: f.maximum_sessions,
+      active_session: (base.active_session as number) ?? 0,
+    },
+    'PUT',
+  );
   if (ok) serviceDialog.value = false;
 }
 
@@ -268,7 +281,9 @@ async function saveDateTime() {
     message.warning('启用 NTP 时必须填主 NTP 服务器');
     return;
   }
+  // 以 GET 到的对象为底整体回写（BMC 期望模型字段齐全）
   const ok = await submitWrite('保存时间设置', 'settings/date-time', {
+    ...(dtBase.value ?? {}),
     timezone: f.timezone.trim(),
     ntp_auto_date: f.ntp_auto_date,
     primary_ntp: f.primary_ntp.trim(),
@@ -336,6 +351,8 @@ const SESSION_TYPE_NAME: Record<number, string> = {
   1: 'web', 2: 'kvm', 3: 'cd-media', 4: 'hd-media', 5: 'kvm', 6: 'ssh',
 };
 const datetime = ref<{ primary_ntp: string; secondary_ntp: string; ntp_auto_date: number; timezone: string } | null>(null);
+/** GET 到的日期时间原始对象（写回时整体带上） */
+const dtBase = ref<Record<string, unknown> | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const userColumns: DataTableColumns<BmcUser> = [
@@ -460,6 +477,7 @@ async function refresh() {
     network.value = netData;
     services.value = svcData;
     datetime.value = dtData;
+    dtBase.value = { ...(dtData as unknown as Record<string, unknown>) };
     // 表单只在未编辑时同步，避免把用户正在输入的内容覆盖掉
     if (!dtDirty.value) {
       dtForm.value = {
@@ -587,6 +605,8 @@ onBeforeUnmount(() => {
           </n-form>
           <p class="tip">
             当前时区 {{ datetime?.timezone ?? '—' }}。BMC 未启用 NTP 时时钟可能不准，日志时间戳会随之偏移。
+            <br />
+            ⚠️ 本机 BMC 当前响应 15~27 秒，此处的保存路径**未实机验证**（用户管理的增删已实测通过）。
           </p>
         </n-tab-pane>
 
@@ -674,6 +694,10 @@ onBeforeUnmount(() => {
         </n-form>
         <n-alert v-if="serviceForm.service_name === 'web'" type="warning" size="small" style="margin-top: 8px">
           改动 web 服务的端口/超时需要重连 BMC；会话上限调得太小会把自己拒之门外。
+        </n-alert>
+        <n-alert type="warning" size="small" style="margin-top: 8px">
+          ⚠️ 实机未验证：本机 BMC 对服务配置写入返回 500（错误码 1198/1199），
+          疑似需要「扩展权限」或更完整的字段集。保存失败时 BMC 配置不会改变。
         </n-alert>
         <template #footer>
           <n-space justify="end">
