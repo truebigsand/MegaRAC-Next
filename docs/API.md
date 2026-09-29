@@ -255,13 +255,73 @@ Bundle 中 `models/chassis_status`：
 
 ## 7. 远程控制 / KVM / 虚拟介质（传输层结论）
 
-### HTML5 KVM（viewer.html + viewer.min.js）
-- 启动：主 UI 打开 `/viewer.html` 独立窗口（H5Viewer）；会话信息存 sessionStorage（`garc` CSRF、`session_id`、privilege 等）
-- **视频/键鼠 WebSocket：`wss://<bmc>/kvm`**（同 443 端口，lighttpd 反代），子协议 `["binary","base64"]`，`binaryType=arraybuffer`
-- 协议为 AMI 私有二进制：`createHeader(cmd, len, status, payload)` 自定义包头；命令常量 `CMD_*`（KEEP_ALIVE_PKT、IPMI_REQ_COMMAND、POWER_CTRL_REQUEST(ON/OFF/CYCLE/HARD_RESET/SOFT_RESET)、KVM_SHARING、PAUSE_REDIRECTION、STOP_SESSION_IMMEDIATE 等）与状态机 `STATUS_KVM_PRIV_*` 全部内嵌于 `viewer.min.js`，可再逆向
-- 会话协商含 master/slave 主从切换、键盘鼠标加密开关、带宽自适应包
-- JNLP 路径：`GET /api/remote_control/get/kvm/launch` → 下载 `jviewer.jnlp`（Java Web Start）。**实测当前 403**——判断因 KVM 会话槽满（active 128/130），待会话表清空后复测
-- 键鼠加密握手/IPMI 命令隧道也在同一 socket（`CMD_IPMI_REQ_COMMAND`）
+### HTML5 KVM（viewer.html + viewer.min.js）—— 2026-09-29 实测更新
+
+**启动链路（已实测）**
+1. `POST /api/session` 登录（拿 CSRFToken）
+2. 取会话与 KVM 令牌（二选一，字段以 h5viewercfg 最全）：
+   - `GET /api/settings/media/h5viewercfg` → `{token, session, client_ip, server_ip, kvm_service_status, num_cd/hd, ...}`
+   - `GET /api/kvm/token` → `{client_ip, token, session}`（给 JNLP 路径用，token 与上者不同）
+   - token 每次请求新发（实测两次调用值不同）；`session` 是 35 字符的 web 会话串
+3. `GET /api/settings/media/adviser` → `{kvm_port:80, web_port:443, singleport_status:1, mouse_mode:2, retry_count:3, ...}`
+   （single port 模式下 KVM 走 443 的 `/kvm` 路径，不单独开端口）
+4. 打开 `wss://<bmc>/kvm`，子协议 `["binary","base64"]`（服务器选 `binary`）
+
+**包格式（⚠️ 长度字段在偏移 2，很容易写错）**
+```
+偏移 0: u16 LE  cmd
+偏移 2: u32 LE  len      ← 不是偏移 4！
+偏移 6: u16 LE  status
+偏移 8: len 字节 payload
+```
+
+**握手时序（已实测：结构被服务器接受）**
+1. 连接后服务器**主动**发 `CMD_CONNECTION_ALLOWED(23) len=0 status=2`
+   （status 2 = `STATUS_FIRST_KVM_SESSION`）
+2. 客户端发校验包（同一条 WS 消息里连续两段）：
+   - `CMD_VALIDATE_VIDEO_SESSION(18) len=438 status=1`，payload =
+     `u8(0)` + `CString(token,129)` + `CString(client_ip,65)` + `CString(username,129)`
+     + `CString(mac,49)` + `CString(server_ip,65)`（CString 为 UTF-8 + 补零到指定长度）
+   - 紧跟 `CMD_RESUME_REDIRECTION(6) len=0 status=0`
+   - username/mac 用原版回退值 `domain/username`、`00-00-00-00-00-00`
+     （`window.LOCAL_USERNAME/LOCAL_MAC` 在整份 bundle 里只读不写）
+3. 服务器回 `CMD_VALIDATED_VIDEO_SESSION(19) len=1 status=…`：
+   `0=INVALID_SESSION / 1=VALID_SESSION / 2=NOT_SUFFICIENT_PRIV / 3=INVALID_SESSION_INFO / 8=SESSION_UNREGISTERED`
+   ⚠️ **我们自建连接的尝试均得到 status=0（INVALID_SESSION）**：包结构已被正确解析（服务器有回应），
+   但会话关联未被接受。已排除：token 来源（h5viewercfg 与 /api/kvm/token 两者都试）、同源/同会话
+   （在同一页面会话内登录→取 token→建 WS）、OEM 握手（本固件 OEM 钩子全是桩 `isOEMCommand(){return !1}`）、
+   client_ip/username/mac 取值。**待办：抓取原版 viewer 的握手原始字节做逐字节比对**
+   （可用 Playwright 监听 WebSocket framesent；注意 `window.open` 同名窗口会复用，需先关掉旧 viewer）
+4. 校验通过后的流程（来自 viewer.min.js）：服务器发 `CMD_MEDIA_LICENSE_STATUS(53)` →
+   客户端回 `CMD_DISPLAY_LOCK_SET(51,[2])`、`CMD_GET_USER_MACRO(40)`、
+   **`CMD_GET_WEB_TOKEN(21) len=35 payload=session`**（把 web 会话串注册给 KVM 服务，实测长度 35 与 session 串长度一致）
+5. 之后进入视频流：`CMD_VIDEO_PACKETS(25)`；帧头含
+   `SourceMode/DestinationMode(X,Y)`、`FrameHdr{CompressionMode, JPEGScaleFactor, JPEGTableSelector,
+   JPEGYUVTableMapping, RC4Enable, ...}`、`Mode420`、`CompressData{SourceFrameSize, CompressSize}`
+   （原版在 `cmdOnVideoPackets` 里跳过 2 字节后按固定偏移读 72 字节帧头，`CompressSize` 决定该帧负载长度）
+6. 解码：原版用 Web Worker **`./libs/kvm/ast/decode_worker.js`**（可从 BMC 直接下载复用）
+
+**其他**
+- 键鼠/加密/IPMI 隧道同在这条 socket（`CMD_SEND_HID_PACKET`、`CMD_IPMI_REQ_COMMAND`、`CMD_ENABLE_ENCRYPTION`…）
+- 主从协商：`CMD_KVM_SHARING(32)` + `STATUS_KVM_PRIV_*` / `KVM_REQ_*` 状态机
+- JNLP 路径：`GET /api/remote_control/get/kvm/launch` → `jviewer.jnlp`（Java Web Start），实测 403（KVM 会话槽计数器满）
+- **实测确认原版 viewer 可用**：从原版"远程控制"页点「启动 KVM」能连上并显示画面（当前主机无视频输出 → 黑屏）
+
+### ⚠️ 会话计数器虚高（重要运维发现，2026-09-29）
+`/api/settings/services` 的 `active_session` 与实际会话表**不一致**：
+
+| 服务 | 计数器 | `service-sessions` 实际列表 |
+|---|---|---|
+| web | 148/148 → 清理后 131 | 20 个（清理后为 0，之后的新登录会再计入） |
+| kvm | 128/130 | **0 个** |
+| cd-media / hd-media | 128/129 | **0 个** |
+
+- 后果：登录可能被拒（`Maximum number of sessions already in use`），尽管实际会话很少；
+  且存在活跃 KVM 会话时 **web 会话超时会被忽略**（i18n 原文：web timeout would be ignored if there exists any alive KVM session）
+- 清理接口（原版"服务"页同款，实测可用）：
+  - 列出：`GET /api/settings/service-sessions?service_id=<1=web,2=kvm,4=cd-media,16=hd-media>`
+  - 踢掉：`DELETE /api/settings/service-sessions/<会话id>`
+- 清理脚本：`reverse/clear_bmc_sessions.mjs`
 
 ### SOL（串口重定向）
 - `wss://<bmc>/sol?CSRFTOKEN=<garc>`，arraybuffer，文本终端绘制（原版 H5 SOL）
