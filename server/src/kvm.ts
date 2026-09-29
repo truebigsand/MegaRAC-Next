@@ -512,7 +512,7 @@ export class KvmSession extends EventEmitter {
         // 每条 134 字节：用户名(64) + IP(65) + 会话 id(1) + IPMI 特权(4)
         const list: { name: string; ip: string; id: number; privilege: number }[] = [];
         for (let off = 0; off + 134 <= payload.length; off += 134) {
-          const cut = (b: Buffer) => b.toString('utf8').replace(/ +$/, '').trim();
+          const cut = (b: Buffer) => b.toString('utf8').replace(/\0+$/, '').trim();
           list.push({
             name: cut(payload.subarray(off, off + 64)),
             ip: cut(payload.subarray(off + 64, off + 129)),
