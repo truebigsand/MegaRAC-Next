@@ -469,12 +469,21 @@ USB 头 32B: "IUSB    "(8) | major u8=1 | minor u8=0 | hdrSize u8=32 | 校验和
    ⚠️ BMC 冷重置**不影响主机与其上的虚拟机**，只中断 BMC 自身的 web/KVM/SOL 服务。
    本项目脚本：`reverse/ipmi_reset_bmc.py`（重置）、`reverse/ipmi_info.py`（只读状态/SEL）、`reverse/wait_bmc_up.py`（等待恢复）。
 
-**本项目已做的防泄漏加固**：
+**⭐ 真正的元凶（2026-09-30 定位）：代理的「401 → 自动重登」死循环**
+- 症状：BMC 会话表在 **十几分钟内**就被打满，随后连登录都被拒、KVM 也连带被拖坏。
+- 机理：该 BMC 会出现"登录成功但请求仍 401"的状态；代理每次 401 都自动重登再试，
+  而前端是定时轮询的 → 每次轮询都新建一条 BMC 会话，形成**建会话风暴**。
+  实测 148 格 ≈ 10 次/分钟，正好吻合。
+- 修法（`server/src/bmc.ts`）：① 登录**合并并发** + **15 秒冷却**；
+  ② 连续 3 次"重登后仍 401"就**熔断**，不再自动重登（等用户重新登录）；
+  ③ 成功一次即清零计数。
+- 验证：修复后让前端持续轮询 4 分钟，登录仍正常、会话表 0 条（修复前同条件会满）。
+
+**其余防泄漏加固**：
 - 代理侧：同一 BMC 账号**只持一条会话**（按用户名池化，`server/src/sessions.ts`），
   N 个浏览器标签 = 1 条 BMC 会话；实测同账号再登录会让先前那条失效（旧会话请求返回
   `Invalid Authentication`），所以"每标签各登一次"本来也互相踢。
-- 逆向探针脚本：用完即注销（`reverse/*.mjs` 文件头有醒目提示）；
-  早期正是这些脚本泄漏的 ~148 条会话把表占满的。
+- 逆向探针脚本：用完即注销（`reverse/*.mjs` 文件头有醒目提示）。
 ### 会话计数器的历史记录（2026-09-29，已被上面一节取代）
 `/api/settings/services` 的 `active_session` 与实际会话表**不一致**：
 
@@ -592,6 +601,18 @@ IUSB 头: 0..7 "IUSB    " | 8 major=1 | 9 minor=0 | 10 headerLength=32 | 11 chec
 
 **结论**：需要 AMI 的 LMEDIA/RMEDIA 授权才能启用。已留下探针脚本
 `reverse/media_probe.mjs`（通道探测）与 `reverse/media_handshake_probe.mjs`（auth/device-info 握手）。
+
+**AMI 官方资料佐证（2026-09-30 查 ami.com.cn / SP-X 数据手册）**：
+- 手册原文：*"administrators enjoy complete out-of-band, OS-independent server control including
+  power management, **KVM redirection and virtual media**"*，并列出 *"Virtual KVM and Virtual Media"*、
+  *"Remote & Local Media"*、*"Serial over LAN (SOL)"* 为标准能力。
+- 关键一句：*"**Since licensing and intellectual property information can be limited to a package**,
+  this modular approach ensures intellectual property protection."* —— 即 SP-X 采用
+  **按服务/按包授权（Technology Pack + license key）**，vMedia 正是可被授权的模块，
+  与本机 `data-license="LMEDIA"/"RMEDIA"` 且开关不持久化的现象一致。
+- vMedia 官方描述含 USB 2.0 重定向、分区块逻辑驱动器重定向、SD/eMMC 与网络共享等；
+  要启用需向 AMI/技嘉取得对应 license key（`/api/settings/licenses` 当前 405 未启用）。
+- 数据手册 PDF 存于 `reverse/spx_datasheet.pdf`。
 
 ## 9. 设置页写操作实测（2026-09-29）
 

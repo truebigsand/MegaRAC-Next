@@ -5,6 +5,7 @@ import {
   NTooltip, useMessage,
 } from 'naive-ui';
 import { bmcSend } from '../api';
+import { onUnauthorized } from '../store';
 import { KvmClient, type KvmClientInfo, type KvmState, type VideoFrame } from '../kvm/client';
 import { HID_CODES, MODIFIER_CODES, mouseButtons } from '../kvm/keymap';
 
@@ -84,7 +85,17 @@ function onResolution(w: number, h: number) {
 function onState(next: KvmState, nextDetail: string) {
   state.value = next;
   detail.value = nextDetail;
-  if (next === 'failed') message.error(nextDetail || 'KVM 连接失败');
+  if (next === 'failed') {
+    message.error(nextDetail || 'KVM 连接失败');
+    // WS 的 401 不走 api.ts 那条路：浏览器会话失效时这里补一次判断，
+    // 否则页面只会显示「连接失败」而不会把人送回登录页
+    void fetch('/api/auth/me')
+      .then((r) => r.json())
+      .then((me: { loggedIn?: boolean }) => {
+        if (!me.loggedIn) onUnauthorized();
+      })
+      .catch(() => {});
+  }
   if (next === 'closed' || next === 'idle' || next === 'failed') clients.value = [];
 }
 

@@ -9,6 +9,16 @@ const REQUEST_TIMEOUT_MS = Number(process.env.BMC_TIMEOUT_MS || 30_000);
 const GET_ATTEMPTS = 3;
 /** 串行队列里最多允许多少个请求在排队（超出直接拒绝，避免雪崩） */
 const MAX_QUEUED = Number(process.env.BMC_MAX_QUEUED || 8);
+/**
+ * 两次登录之间的最小间隔（毫秒）。
+ * ⚠️ 必须有：BMC 的 401 会触发"重登再试"，而前端是定时轮询的——
+ * 一旦出现"登录成功但请求仍 401"的状态，就会形成**疯狂建会话的死循环**，
+ * 实测十几分钟就把 BMC 那 148 格的会话表打满，之后连登录都被拒
+ * （并且把 KVM 服务拖坏）。冷却 + 连续失败熔断是止血关键。
+ */
+const LOGIN_COOLDOWN_MS = Number(process.env.BMC_LOGIN_COOLDOWN_MS || 15_000);
+/** 连续多少次确诊"重登也救不回来"后就熔断（停止自动重登，等用户重新登录） */
+const MAX_CONSECUTIVE_RELOGIN_FAILURES = 3;
 
 // BMC 用自签证书，仅对发往 BMC 的请求关闭校验
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
@@ -33,6 +43,11 @@ export class BmcClient {
   private racSessionId = 0;
   loggedIn = false;
   private queue: Promise<unknown> = Promise.resolve();
+  /** 上次登录时间与并发合并（见 LOGIN_COOLDOWN_MS 的说明） */
+  private lastLoginAt = 0;
+  private loginInFlight: Promise<void> | null = null;
+  /** 连续"重登后仍然 401"的次数，达到上限就熔断 */
+  private reloginFailures = 0;
 
   constructor(username: string, password: string) {
     this.username = username;
@@ -118,6 +133,24 @@ export class BmcClient {
   }
 
   async login(): Promise<void> {
+    // 合并并发登录：多个请求同时发现 401 时只登一次
+    if (this.loginInFlight) return this.loginInFlight;
+    // 冷却：15 秒内不重复登录，避免 401 循环把 BMC 会话表打满
+    const since = Date.now() - this.lastLoginAt;
+    if (since < LOGIN_COOLDOWN_MS) {
+      throw new Error(`bmc_login_throttled: 登录过于频繁（${Math.ceil((LOGIN_COOLDOWN_MS - since) / 1000)}s 后重试）`);
+    }
+    const p = this.doLogin();
+    this.loginInFlight = p;
+    try {
+      await p;
+    } finally {
+      this.loginInFlight = null;
+    }
+  }
+
+  private async doLogin(): Promise<void> {
+    this.lastLoginAt = Date.now();
     const form = new URLSearchParams({ username: this.username, password: this.password });
     const res = await this.rawRequest('POST', '/api/session', { form: form.toString() });
     let data: Record<string, unknown> = {};
@@ -133,6 +166,7 @@ export class BmcClient {
     this.csrf = data.CSRFToken;
     this.racSessionId = Number(data.racsession_id ?? 0);
     this.loggedIn = true;
+    this.reloginFailures = 0;
   }
 
   async logout(): Promise<void> {
@@ -151,15 +185,25 @@ export class BmcClient {
     // 会话失效时 BMC 返回 401 {"cc":7,"error":"Invalid Authentication"}（实测）；
     // 403 多为资源/权限性拒绝（例如 KVM 会话槽满），因此只把 401 视为会话失效。
     if (res.status === 401) {
+      // 熔断：连续多次"重登也救不回"说明不是过期，而是账号/会话槽位问题，
+      // 继续自动重登只会疯狂建会话（见 LOGIN_COOLDOWN_MS）
+      if (this.reloginFailures >= MAX_CONSECUTIVE_RELOGIN_FAILURES) {
+        this.loggedIn = false;
+        throw new BmcSessionExpiredError();
+      }
       try {
         await this.login();
         res = await this.rawRequest(method, path, opts);
       } catch {
+        this.reloginFailures++;
         this.loggedIn = false;
         throw new BmcSessionExpiredError();
       }
-      // 重登后仍然 401：会话已不可恢复（调用方会据此丢弃浏览器会话，让用户重新登录）
-      if (res.status === 401) throw new BmcSessionExpiredError();
+      if (res.status === 401) {
+        this.reloginFailures++;
+        throw new BmcSessionExpiredError();
+      }
+      this.reloginFailures = 0; // 成功一次就清零
     } else if (res.status === 403) {
       // 403 顺带重登一次再试（老固件可能以此表示会话失效）；仍为 403 则视为资源性拒绝原样返回
       try {
