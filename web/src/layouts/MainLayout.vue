@@ -6,6 +6,7 @@ import { RouterView } from 'vue-router';
 import { auth } from '../store';
 import { logout } from '../api';
 import { useIsMobile } from '../useMediaQuery';
+import { IconDashboard, IconSensors, IconPower, IconFans, IconLogs, IconHistory, IconKvm, IconSettings } from '../icons';
 
 const router = useRouter();
 const route = useRoute();
@@ -15,14 +16,14 @@ const showMenu = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const menuOptions = [
-  { label: '仪表板', key: 'dashboard' },
-  { label: '传感器', key: 'sensors' },
-  { label: '电源控制', key: 'power' },
-  { label: '风扇控制', key: 'fans' },
-  { label: '事件日志', key: 'logs' },
-  { label: '历史趋势', key: 'history' },
-  { label: 'KVM', key: 'kvm' },
-  { label: '设置', key: 'settings' },
+  { label: '仪表板', key: 'dashboard', icon: IconDashboard },
+  { label: '传感器', key: 'sensors', icon: IconSensors },
+  { label: '电源控制', key: 'power', icon: IconPower },
+  { label: '风扇控制', key: 'fans', icon: IconFans },
+  { label: '事件日志', key: 'logs', icon: IconLogs },
+  { label: '历史趋势', key: 'history', icon: IconHistory },
+  { label: 'KVM', key: 'kvm', icon: IconKvm },
+  { label: '设置', key: 'settings', icon: IconSettings },
 ];
 
 function onMenuUpdate(key: string) {
