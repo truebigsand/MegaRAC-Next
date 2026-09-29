@@ -10,7 +10,9 @@ import { CHART_COLORS, PREVIEW_PALETTE } from '../chartTheme';
 const isMobile = useIsMobile();
 
 const available = ref<string[]>([]);
-const picked = ref<string[]>(['CPU0_TEMP', 'CPU0_DTS', 'CPU0_FAN']);
+// 默认不选 CPU0_DTS：它是「距临界温度的余量」（越小越热），与真实温度不同源，
+// 同图显示会拉偏纵轴；需要时可手动勾选
+const picked = ref<string[]>(['CPU0_TEMP', 'CPU0_FAN']);
 const windowMinutes = ref<number>(60);
 const loading = ref(true);
 const chartEl = ref<HTMLDivElement>();
