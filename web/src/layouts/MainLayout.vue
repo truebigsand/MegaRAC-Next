@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NButton, NSpace, NTag, NDrawer, NDrawerContent, NIcon } from 'naive-ui';
 import { RouterView } from 'vue-router';
@@ -12,6 +12,7 @@ const route = useRoute();
 const isMobile = useIsMobile();
 const hostOn = ref<boolean | null>(null);
 const showMenu = ref(false);
+let timer: ReturnType<typeof setInterval> | null = null;
 
 const menuOptions = [
   { label: '仪表板', key: 'dashboard' },
@@ -60,7 +61,11 @@ onMounted(async () => {
     }
   };
   poll();
-  setInterval(poll, 5000);
+  timer = setInterval(poll, 5000);
+});
+
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer);
 });
 </script>
 

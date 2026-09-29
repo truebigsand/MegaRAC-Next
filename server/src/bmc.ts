@@ -124,8 +124,9 @@ export class BmcClient {
   private async authorized(method: string, path: string, opts: { json?: unknown } = {}): Promise<BmcResult> {
     if (!this.loggedIn) throw new BmcSessionExpiredError();
     let res = await this.rawRequest(method, path, opts);
-    // BMC 会话过期/被挤：静默重登一次再重试
-    if (res.status === 403) {
+    // 会话失效时 BMC 返回 401 {"cc":7,"error":"Invalid Authentication"}（实测）；
+    // 403 多为资源/权限性拒绝（例如 KVM 会话槽满），因此只把 401 视为会话失效。
+    if (res.status === 401) {
       try {
         await this.login();
         res = await this.rawRequest(method, path, opts);
@@ -133,7 +134,17 @@ export class BmcClient {
         this.loggedIn = false;
         throw new BmcSessionExpiredError();
       }
-      if (res.status === 403) throw new BmcSessionExpiredError();
+      // 重登后仍然 401：会话已不可恢复（调用方会据此丢弃浏览器会话，让用户重新登录）
+      if (res.status === 401) throw new BmcSessionExpiredError();
+    } else if (res.status === 403) {
+      // 403 顺带重登一次再试（老固件可能以此表示会话失效）；仍为 403 则视为资源性拒绝原样返回
+      try {
+        await this.login();
+        const retry = await this.rawRequest(method, path, opts);
+        if (retry.status !== 403) res = retry;
+      } catch {
+        /* 重登失败也按 403 原样返回，不误判为会话失效 */
+      }
     }
     return res;
   }

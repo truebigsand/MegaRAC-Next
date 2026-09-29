@@ -120,6 +120,12 @@ app.get('/bmc/*', async (req, reply) => {
     return reply.code(res.status).type('application/json').send(res.text);
   } catch (e) {
     if (e instanceof BmcSessionExpiredError) {
+      // BMC 会话失效且自动重登失败：同时丢弃浏览器会话，
+      // 否则 /api/auth/me 仍回答已登录，前端会在登录页与主页之间反复跳转
+      const token = req.cookies[COOKIE_NAME];
+      if (token && dropSession(token)) {
+        app.log.warn('BMC 会话失效且重登失败，已丢弃浏览器会话（需重新登录）');
+      }
       return reply.code(401).send({ error: 'bmc_session_expired' });
     }
     app.log.error(`BMC GET 失败 ${path}: ${(e as Error).message}`);
@@ -142,6 +148,12 @@ async function forwardWrite(
     return reply.code(res.status).type('application/json').send(res.text);
   } catch (e) {
     if (e instanceof BmcSessionExpiredError) {
+      // BMC 会话失效且自动重登失败：同时丢弃浏览器会话，
+      // 否则 /api/auth/me 仍回答已登录，前端会在登录页与主页之间反复跳转
+      const token = req.cookies[COOKIE_NAME];
+      if (token && dropSession(token)) {
+        app.log.warn('BMC 会话失效且重登失败，已丢弃浏览器会话（需重新登录）');
+      }
       return reply.code(401).send({ error: 'bmc_session_expired' });
     }
     app.log.error(`BMC ${method} 失败 ${path}: ${(e as Error).message}`);
