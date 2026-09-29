@@ -32,9 +32,24 @@ export async function logout(): Promise<void> {
   onUnauthorized();
 }
 
+/**
+ * 进行中的 GET（按 URL 去重）。
+ * BMC 慢的时候一次请求可能要十几秒，而各页面是定时轮询的（最短 3s）——
+ * 不去重就会在代理的串行队列里越堆越多，反过来把 BMC 压得更慢（实测踩过）。
+ * 同一个 GET 还没回来时，后续调用直接复用它的 Promise。
+ */
+const inflightGets = new Map<string, Promise<unknown>>();
+
 export async function bmcGet<T>(path: string): Promise<T> {
-  const res = await fetch('/bmc/' + path.replace(/^\/?api\//, ''));
-  return (await handle(res)) as T;
+  const url = '/bmc/' + path.replace(/^\/?api\//, '');
+  const existing = inflightGets.get(url);
+  if (existing) return existing as Promise<T>;
+  const p = (async () => {
+    const res = await fetch(url);
+    return handle(res);
+  })().finally(() => inflightGets.delete(url));
+  inflightGets.set(url, p);
+  return (await p) as T;
 }
 
 /** 代理自身提供的接口（非 BMC 转发），如 /api/history* */

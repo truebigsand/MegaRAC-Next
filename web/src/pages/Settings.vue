@@ -57,7 +57,8 @@ const services = ref<BmcService[]>([]);
  * 而真实会话列表是 0 条）。真正有意义的是 /settings/service-sessions 的条数，
  * 所以这里单独取一份按 session_type 统计的真实值。
  */
-const realSessions = ref<Record<string, number>>({});
+// null = 还没取到（显示 —）；{} = 已取到且确实没有会话（显示 0）
+const realSessions = ref<Record<string, number> | null>(null);
 const SESSION_TYPE_NAME: Record<number, string> = {
   1: 'web', 2: 'kvm', 3: 'cd-media', 4: 'hd-media', 5: 'kvm', 6: 'ssh',
 };
@@ -116,8 +117,11 @@ const serviceColumns: DataTableColumns<BmcService> = [
   {
     title: '会话 当前/上限',
     key: 'sess',
-    render: (s) =>
-      `${realSessions.value[s.service_name] ?? '—'} / ${s.maximum_sessions}`,
+    render: (s) => {
+      const known = realSessions.value;
+      const cur = known ? (known[s.service_name] ?? 0) : '—';
+      return `${cur} / ${s.maximum_sessions}`;
+    },
   },
 ];
 
@@ -131,7 +135,7 @@ async function loadRealSessions() {
     }
     realSessions.value = byType;
   } catch {
-    realSessions.value = {}; // 取不到就显示 —，不显示 BMC 那个假计数器
+    realSessions.value = null; // 取不到就显示 —，绝不显示 BMC 那个假计数器
   }
 }
 

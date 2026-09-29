@@ -7,6 +7,8 @@ const BMC_BASE = process.env.BMC_BASE || 'https://192.168.0.200';
 const REQUEST_TIMEOUT_MS = Number(process.env.BMC_TIMEOUT_MS || 30_000);
 /** 瞬时故障（超时/连接被中断）时 GET 的重试次数；写操作不重试，避免重复提交 */
 const GET_ATTEMPTS = 3;
+/** 串行队列里最多允许多少个请求在排队（超出直接拒绝，避免雪崩） */
+const MAX_QUEUED = Number(process.env.BMC_MAX_QUEUED || 8);
 
 // BMC 用自签证书，仅对发往 BMC 的请求关闭校验
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
@@ -37,11 +39,31 @@ export class BmcClient {
     this.password = password;
   }
 
-  /** 串行化：同一时刻只有一个请求在飞，保护 BMC 极小的并发会话配额 */
+  /** 当前排队等待的请求数（用于诊断与限流） */
+  private queued = 0;
+
+  /**
+   * 串行化：同一时刻只有一个请求在飞，保护 BMC 极小的并发会话配额。
+   *
+   * ⚠️ 但必须限制**排队等待**：BMC 慢时单个请求可能十几秒，
+   * 若来者不拒地排队，前端轮询会越堆越多并反过来把 BMC 压得更慢（实测踩过）。
+   * 等待超过 QUEUE_WAIT_LIMIT_MS 就直接失败，让调用方稍后重试。
+   */
   private run<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(fn, fn);
+    if (this.queued >= MAX_QUEUED) {
+      return Promise.reject(new Error('bmc_busy: 排队请求过多，请稍后重试'));
+    }
+    this.queued++;
+    const next = this.queue.then(fn, fn).finally(() => {
+      this.queued--;
+    });
     this.queue = next.catch(() => {});
     return next;
+  }
+
+  /** 排队中的请求数 */
+  get queueDepth(): number {
+    return this.queued;
   }
 
   private async rawRequest(
