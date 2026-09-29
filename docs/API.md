@@ -311,6 +311,15 @@ CMD_KVM_MEDIA_INFO(38) / ACTIVE_CLIENTS(39) …
   payload = `atob(other_session_info)`
 - 原版界面此时显示「请求完整访问」按钮（可在 viewer 工具栏看到，实测存在 ✓）
 
+**✅ 端到端跑通（2026-09-29）**：按下面时序实现的自建客户端已成功收到视频流
+（4 个 `CMD_VIDEO_PACKETS` 共 129718 字节，首包 30002 字节，1024x768）。
+参考实现：`reverse/kvm_client_reference.mjs`（浏览器上下文运行；Node 原生 WebSocket 因自签证书会 1006，
+移植需用 `ws` 之类的库或手写 TLS 升级）。
+完整握手顺序：登录 → h5viewercfg → CONN_ALLOWED → CONN_COMPLETE+VALIDATE →
+**KVM_SHARING(收到即回请求 master)** → VALIDATED(19) status=0 → MEDIA_LICENSE_STATUS(53)
+（回 DISPLAY_LOCK_SET/GET_USER_MACRO/GET_WEB_TOKEN）→ KEEP_ALIVE(57) 定时保活 → 视频流。
+注意 `status=0` 在 VALIDATED 上表示"已通过"（与原版一致），与内嵌枚举里的 `INVALID_SESSION` 同名但语义不同。
+
 **握手时序（已实测：结构被服务器接受）**
 1. 连接后服务器**主动**发 `CMD_CONNECTION_ALLOWED(23) len=0 status=2`
    （status 2 = `STATUS_FIRST_KVM_SESSION`）
