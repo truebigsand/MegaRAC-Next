@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vicons/ionicons5": "^0.13.0",
     "echarts": "^5.5.0",
     "naive-ui": "^2.40.0",
     "vue": "^3.5.0",
