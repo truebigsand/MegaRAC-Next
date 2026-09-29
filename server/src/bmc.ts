@@ -49,8 +49,10 @@ export class BmcClient {
    * 若来者不拒地排队，前端轮询会越堆越多并反过来把 BMC 压得更慢（实测踩过）。
    * 等待超过 QUEUE_WAIT_LIMIT_MS 就直接失败，让调用方稍后重试。
    */
-  private run<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.queued >= MAX_QUEUED) {
+  private run<T>(fn: () => Promise<T>, priority = false): Promise<T> {
+    // 只有「轮询型」请求会被限流；登录/写操作/KVM 建连这类**用户主动触发**的请求走优先通道，
+    // 否则 BMC 一慢就会被后台轮询挤掉（实测 KVM 建连被 bmc_busy 拒过）。
+    if (!priority && this.queued >= MAX_QUEUED) {
       return Promise.reject(new Error('bmc_busy: 排队请求过多，请稍后重试'));
     }
     this.queued++;
@@ -171,15 +173,15 @@ export class BmcClient {
     return res;
   }
 
-  /** GET 数据端点（只读） */
-  get(path: string): Promise<BmcResult> {
-    return this.run(() => this.authorized('GET', path));
+  /** GET 数据端点（只读）。默认走限流通道；priority=true 时优先放行 */
+  get(path: string, priority = false): Promise<BmcResult> {
+    return this.run(() => this.authorized('GET', path), priority);
   }
 
   /** 写操作转发（POST/PUT/DELETE），由前端确认对话框把关 */
   
   send(method: 'POST' | 'PUT' | 'DELETE', path: string, json?: unknown): Promise<BmcResult> {
-    return this.run(() => this.authorized(method, path, { json }));
+    return this.run(() => this.authorized(method, path, { json }), true);
   }
 
   get sessionId(): number {

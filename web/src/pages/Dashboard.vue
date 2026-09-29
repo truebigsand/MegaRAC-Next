@@ -127,7 +127,7 @@ onMounted(async () => {
     /* 忽略，界面显示占位 */
   }
   await refresh();
-  timer = setInterval(refresh, 3000);
+  timer = setInterval(refresh, 5000);
 });
 
 onBeforeUnmount(() => {

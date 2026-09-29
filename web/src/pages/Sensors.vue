@@ -91,7 +91,7 @@ async function refresh() {
 
 onMounted(() => {
   refresh();
-  timer = setInterval(refresh, 3000);
+  timer = setInterval(refresh, 10000);
 });
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);

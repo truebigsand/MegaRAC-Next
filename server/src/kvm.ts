@@ -366,7 +366,8 @@ export class KvmSession extends EventEmitter {
   private cfg: ViewerCfg | null = null;
 
   private async fetchViewerCfg(): Promise<ViewerCfg> {
-    const res = await this.bmc.get('/api/settings/media/h5viewercfg');
+    // 优先级通道：BMC 慢时也要能连上，别被后台轮询挤掉
+    const res = await this.bmc.get('/api/settings/media/h5viewercfg', true);
     if (res.status !== 200 || !res.body) {
       throw new Error(`h5viewercfg 失败（HTTP ${res.status}）`);
     }

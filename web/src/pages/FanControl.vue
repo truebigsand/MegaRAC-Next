@@ -795,7 +795,7 @@ useChartAutoResize(chartEl, () => chart);
 onMounted(() => {
   chart = echarts.init(chartEl.value!);
   refresh();
-  timer = setInterval(refresh, 5000);
+  timer = setInterval(refresh, 15000);
 });
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);

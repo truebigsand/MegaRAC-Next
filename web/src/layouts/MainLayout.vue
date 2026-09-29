@@ -62,7 +62,7 @@ onMounted(async () => {
     }
   };
   poll();
-  timer = setInterval(poll, 5000);
+  timer = setInterval(poll, 10000);
 });
 
 onBeforeUnmount(() => {
