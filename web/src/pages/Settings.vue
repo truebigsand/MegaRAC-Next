@@ -1,11 +1,46 @@
 <script setup lang="ts">
 import { h, onBeforeUnmount, onMounted, ref } from 'vue';
-import { NTabs, NTabPane, NDataTable, NDescriptions, NDescriptionsItem, NTag } from 'naive-ui';
+import {
+  NButton,
+  NDataTable,
+  NDescriptions,
+  NDescriptionsItem,
+  NPopconfirm,
+  NSpace,
+  NTabPane,
+  NTabs,
+  NTag,
+  useMessage,
+} from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
 import { bmcGet } from '../api';
 import { useIsMobile } from '../useMediaQuery';
 
 const isMobile = useIsMobile();
+/** 首次加载中（BMC 慢时可能要十几秒，别让表格显示成「无数据」） */
+const tableLoading = ref(true);
+const message = useMessage();
+const clearing = ref(false);
+
+/**
+ * 清理 BMC 上除本代理以外的会话（只删会话记录，不动配置）。
+ * BMC 会话表只有 148 格，占满后新登录会被拒，这里给一个 UI 上的自救入口。
+ */
+async function clearBmcSessions() {
+  clearing.value = true;
+  try {
+    const res = await fetch('/api/maintenance/clear-bmc-sessions', { method: 'POST' });
+    const data = (await res.json()) as { ok?: boolean; report?: Record<string, { removed: number }> };
+    if (!res.ok) throw new Error('清理失败');
+    const removed = Object.values(data.report ?? {}).reduce((a, r) => a + (r.removed ?? 0), 0);
+    message.success(`已清理 ${removed} 个僵尸会话`);
+    await refresh();
+  } catch (e) {
+    message.error((e as Error).message);
+  } finally {
+    clearing.value = false;
+  }
+}
 
 interface FruDevice {
   device: { id: number; name: string };
@@ -156,6 +191,8 @@ async function refresh() {
     datetime.value = dtData;
   } catch {
     /* 401 由 api 层处理 */
+  } finally {
+    tableLoading.value = false;
   }
 }
 
@@ -192,7 +229,7 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="users" :tab="isMobile ? '用户' : '用户管理'">
-          <n-data-table :columns="userColumns" :data="users" size="small" :bordered="false" :scroll-x="isMobile ? 620 : undefined" />
+          <n-data-table :loading="tableLoading" :columns="userColumns" :data="users" size="small" :bordered="false" :scroll-x="isMobile ? 620 : undefined" />
         </n-tab-pane>
 
         <n-tab-pane name="network" tab="网络">
@@ -236,7 +273,16 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="services" tab="服务">
-          <n-data-table :columns="serviceColumns" :data="services" size="small" :bordered="false" :scroll-x="isMobile ? 520 : undefined" />
+          <n-space vertical size="small">
+            <n-popconfirm @positive-click="clearBmcSessions">
+              <template #trigger>
+                <n-button size="small" :loading="clearing">清理僵尸会话</n-button>
+              </template>
+              将删除 BMC 上除本代理以外的全部会话记录（不改任何配置）。
+              若浏览器里还开着别的 BMC 页面会被登出，确认执行？
+            </n-popconfirm>
+            <n-data-table :loading="tableLoading" :columns="serviceColumns" :data="services" size="small" :bordered="false" :scroll-x="isMobile ? 520 : undefined" />
+          </n-space>
           <p class="tip">
             「会话 当前」取的是 BMC 真实会话列表的条数。BMC 自身 API 里的
             <code>active_session</code> 计数器实测是错的（重置后仍显示接近上限），故不使用。

@@ -7,6 +7,8 @@ import type { Sensor } from '../types';
 import { useIsMobile } from '../useMediaQuery';
 
 const isMobile = useIsMobile();
+/** 首次加载中：BMC 慢时表格别显示成「无数据」 */
+const tableLoading = ref(true);
 
 const sensors = ref<Sensor[]>([]);
 const filterType = ref<string>('all');
@@ -87,6 +89,7 @@ async function refresh() {
   } catch {
     /* 401 已由 api 层处理 */
   }
+  finally { tableLoading.value = false; }
 }
 
 onMounted(() => {
@@ -104,6 +107,7 @@ onBeforeUnmount(() => {
       <n-select v-model:value="filterType" :options="typeOptions" style="width: 160px" size="small" />
     </template>
     <n-data-table
+      :loading="tableLoading"
       :columns="columns"
       :data="filtered"
       :bordered="false"
