@@ -1,95 +1,115 @@
 # MegaRAC-Next
 
-技嘉 MZ32-AR0（EPYC 7R32）BMC（AMI MegaRAC SP-X 12.x @ 192.168.0.200）Web UI 的现代化重制版。
+把一块技嘉 **MZ32-AR0**（AMD EPYC 7R32）主板上的 **AMI MegaRAC SP-X 12.41.11** BMC 管理界面，
+逆向后重制成了一个现代化的 Web UI —— 并附带一个**完全自研的 KVM 播放器**。
 
-## 设计共识（2026-09-28 grill 定稿）
+原厂界面是十多年前的风格（Bootstrap 3 + jQuery、满屏英文长表），这个重制版用
+Fastify + Vue 3 + Naive UI + ECharts 重写：界面简体中文、暗色优先、移动端可用。
 
-- **架构**：Fastify (Node/TypeScript) 代理（仅绑 127.0.0.1，持有单个 BMC 会话多路复用）+ Vue 3 / Vite / Naive UI / ECharts SPA
-- **认证**：登录页透传 BMC 账密，代理代登录；凭证仅驻代理内存，不落盘
-- **功能 v1**：仪表盘/传感器/电源控制/SEL 日志、风扇控制页（含曲线编辑器）、系统设置页、传感器历史趋势（`HistoryStore` 接口 + SQLite 实现，保留 30 天，后续可换库）、KVM（最后做：先查现成实现 → 自研 → 跳转原版兜底）
-- **纪律**：写操作已全部启用（有二次确认弹窗兜底）；逆向阶段的关键结论都区分「实测」与「推断」
-- **工作流**：git 仓库，每完成一个可验证里程碑自动 commit
-- **界面**：简体中文，暗色默认可切亮色
+> 全部协议结论都来自对**自己这台机器的 BMC** 的实测。文档里标「实测」的都是真机验证过的结论，
+> 标「推断」的会明说；逆向过程、踩坑与救场记录见 [`docs/API.md`](docs/API.md)。
 
-## 开发顺序（全部完成 ✅，写操作待验证后开放）
+## 界面
 
-1. ✅ 逆向 + API 文档（`docs/API.md`）
-2. ✅ Fastify 代理 + 透传登录
-3. ✅ 仪表盘 / 传感器 / 电源页
-4. ✅ 风扇控制页（曲线编辑器）
-5. ✅ 传感器历史落盘（HistoryStore 接口 + SQLite，`server/data/history.sqlite3`）
-6. ✅ 设置页（FRU/用户/网络/NTP/服务，只读）
-7. ✅ KVM（**自研播放器已真机跑通**：服务端中继 + AST2100 解码 + 画面渲染 + 键鼠输入）
+| 仪表盘 | 风扇曲线 |
+|---|---|
+| ![仪表盘](docs/images/dashboard.png) | ![风扇](docs/images/fans.png) |
 
-## 启动
+| KVM 远程控制台 | 事件日志（SEL） |
+|---|---|
+| ![KVM](docs/images/kvm.png) | ![SEL](docs/images/sel.png) |
+
+## 功能
+
+| 页面 | 说明 |
+|---|---|
+| **仪表盘** | 固件版本 / 开机时长 / 温度 / 风扇卡片 + 实时趋势图 |
+| **传感器** | 全量传感器表（读数、状态、六档阈值），可排序 |
+| **电源控制** | 开机 / 关机 / ACPI 软关机 / 硬重启 / 电源循环，均带二次确认 |
+| **风扇控制** | 完整策略编辑器：Step / Slope 算法、源传感器与被控风扇多选、初始占空比、滞回、TDP / 环境温度 / PCIe 执行条件；**曲线编辑器**支持 6 种预设形状取样为有限数据点（等距或按斜率自适应取点）、增删数据点 |
+| **事件日志** | SEL 全表 + 关键词 / 传感器 / 方向筛选 + 分页（20/50/100/200） |
+| **历史趋势** | 代理侧定时采样落盘（`HistoryStore` 接口 + SQLite），可多传感器叠加 |
+| **KVM** | 自研播放器：实时画面、键鼠、截图、全屏、缩放、Ctrl+Alt+Del / Win / PrintScreen 等特殊键、页内电源控制、在线客户端列表 |
+| **设置** | FRU / 用户（可增删改）/ 网络 / 日期时间 / 服务；含「清理僵尸会话」自救按钮 |
+
+## KVM 播放器（本项目最有意思的部分）
+
+不复用原厂 `viewer.min.js`，只复用 BMC 自带的 AST2100 解码 worker，整条链路都是自己实现的：
+
+```
+BMC ──wss /kvm──► 代理（Node）──ws /api/kvm──► 浏览器
+                    │  · IVTP 握手（含必须的 CONNECTION_COMPLETE 头）
+                    │  · 按帧重组（帧头 86B + CompressSize）
+                    │  · 主从协商（CMD_SET_NEXT_MASTER）
+                    └  · 键鼠 USB-HID 报文编码（与原厂逐字节一致）
+```
+
+几个踩过的坑（都有实测记录）：
+
+- **BMC 的 WebSocket 是字节流**：包会跨消息、消息也可含多包，必须跨消息累积重组；
+- **视频帧是差分的**（skip 码沿用上一帧像素），所以浏览器刷新/重连时不能自己解析裸流——
+  现在由**服务端重组整帧**后下发，浏览器天然从下一个完整帧开始渲染；
+- **主从权限**：`VALIDATED` 的 `payload[1]` 是会话序号，`>0` 表示自己是从属——
+  **画面照常但键鼠全无效**，特别有迷惑性；从属要发 `CMD_SET_NEXT_MASTER` 申请，
+  自身为主控时则自动同意他人的申请；
+- **解码 worker 的输出缓冲必须跨帧持续存在**，每帧新建空白缓冲会把未变化区域抹成黑块；
+- 重连要**复用未断的 BMC 会话**并索取整屏完整帧，否则 BMC 还没释放主控、新连接会变成从属。
+
+完整协议见 [`docs/API.md` 第 7 节](docs/API.md)。
+
+## 快速开始
 
 ```bash
 npm install
-npm run dev:server   # Fastify 代理，监听 0.0.0.0:5177（HOST/PORT 可用环境变量覆盖）
-npm run dev:web      # Vue3 开发服务器，监听 0.0.0.0:5173
+
+npm run dev:server   # 代理，默认 http://0.0.0.0:5177
+npm run dev:web      # 前端，默认 http://0.0.0.0:5173
 ```
 
-两端默认监听所有网卡，同一局域网（或 Tailscale 网段）内可直接用本机 IP 访问，
-例如 `http://192.168.0.101:5173`。访问者仍需输入 BMC 账号密码登录，代理不保存凭证。
+浏览器打开 `http://localhost:5173`，用 **BMC 的账号密码**登录（凭证只经代理内存转发，不落盘）。
 
-写操作：已全部启用（电源控制/风扇写入均有二次确认弹窗兜底）。
+可用环境变量：
 
-## KVM 自研播放器
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `BMC_BASE` | `https://192.168.0.200` | BMC 地址 |
+| `HOST` / `PORT` | `0.0.0.0` / `5177` | 代理监听 |
+| `BMC_TIMEOUT_MS` | `30000` | 单请求超时（该 BMC 慢时单请求可达 20 秒） |
+| `HISTORY_DB` | `data/history.sqlite3` | 历史趋势库 |
+| `BMC_MAX_QUEUED` | `8` | 串行队列上限（防雪崩） |
+| `BMC_LOGIN_COOLDOWN_MS` | `15000` | 两次登录最小间隔（防重登风暴） |
 
-不复用原版 `viewer.min.js`，只复用 BMC 自带的 AST2100 解码 worker。结构：
-
-```
-server/src/kvm.ts         与 BMC 的 /kvm 建连 + IVTP 握手 + 帧重组 + 主从协商
-server/src/kvm-route.ts   /api/kvm（WebSocket 中继）、/api/kvm/decoder.js（解码 worker 代理）
-server/src/hid.ts         键鼠 HID 报文构造（与原版逐字节一致）
-web/src/kvm/client.ts     收整帧 → 解码 worker → ImageData
-web/src/kvm/keymap.ts     KeyboardEvent.code → USB HID 键码
-web/src/pages/Kvm.vue     canvas 渲染 + 全局键鼠/触屏输入
-```
-
-两个关键设计：
-- **帧在服务端重组**。视频帧是差分的（AST2100 的 skip 码沿用上一帧像素），
-  浏览器刷新/重连后是从半途接入的——让它自己解析裸字节流会对不齐帧边界，一帧都收不齐（实测）。
-  服务端重组后只下发完整帧，浏览器天然从下一个完整帧开始。
-- **重连复用 BMC 会话**。BMC 释放 KVM 主控要好几秒，断开即关、重连重握手会拿到「从属会话」
-  （画面正常但键鼠全无效）。所以会话生命周期不绑定浏览器 WS：断开后保留 60s 供复用，
-  复用瞬间用「暂停→恢复」向 BMC 索取整屏完整帧；用户点「断开」则立即释放。
-
-为什么要服务端中继：BMC 用自签证书，浏览器直连要先导入证书；
-且握手需要 token/会话串/客户端 IP，放服务端可让浏览器不持有第二套凭证。
-
-**已验证**（2026-09-29，主机为 MZ32-AR0 上的 ESXi 8.0 DCUI）：画面渲染正常，
-`F2` 能唤出 DCUI 登录框并输入账号回显；`Esc` 能关闭。
-鼠标报文已与原版逐字节核对并送达，但 ESXi DCUI 不支持鼠标，指针效果待在有鼠标的客机上验证。
-
-**已知限制**：同时只允许一个主控会话。若已有别的会话占着主控，
-本代理会持续申请完全控制并重连争取（此期间画面可见、键鼠无效），
-自身为主控时则自动同意他人的申请。详见 `docs/API.md` 第 7 节。
-
-## BMC 会话表（重要运维提示）
-
-该 BMC 的 web 会话上限只有 **148**，占满后新登录被拒，且 `/kvm` 升级会"假成功"
-（先 101 再发一个完整的 HTTP 200 回退页，客户端报 `RSV1 must be clear`）。
-代理已做加固：**同一 BMC 账号只持一条会话**（多标签页共享）。
-另提供一键清理：
-
-```bash
-curl -X POST http://127.0.0.1:5177/api/maintenance/clear-bmc-sessions   # 需已登录（带 cookie）
-```
-
-彻底卡死（连登录都进不去）时走 IPMI 冷重置 BMC（**不影响主机与虚拟机**）：
-
-```bash
-python reverse/ipmi_reset_bmc.py    # 依赖 pyghmi；重置后约 2.5 分钟恢复
-```
-
-详见 `docs/API.md` 第 7 节的「救场流程」。
-
-## 目录
+## 目录结构
 
 ```
-docs/       逆向文档（API.md）
-reverse/    逆向工作区（分析脚本 + API 响应样本；AMI 的 bundle 文件不入库）
-server/     Fastify 代理（阶段②）
-web/        Vue3 前端（阶段③起）
+docs/API.md        逆向文档：240 个端点、会话协议、风扇写协议、KVM / SOL / 虚拟介质协议
+docs/images/       README 配图
+server/            Fastify 代理
+  bmc.ts             BMC 客户端（单会话池化 + 登录冷却/熔断 + 串行队列）
+  kvm.ts             KVM 中继：握手、整帧重组、主从协商
+  kvm-route.ts       /api/kvm（WS 中继）与 /api/kvm/decoder.js（解码 worker 代理）
+  hid.ts             键鼠 USB-HID 报文构造
+  history/           采样器 + HistoryStore（SQLite 实现）
+web/               Vue 3 + Vite 前端
+  src/pages/         各页面
+  src/kvm/           KVM 客户端与键码表
+reverse/           逆向工作区（探针脚本 + 样本；AMI 版权产物已 gitignore）
 ```
+
+## 已知限制
+
+- **虚拟介质（挂 ISO）做不了**：协议已完整逆向（`/cd-server` + iusb/SCSI，见 `docs/API.md` 第 8 节），
+  但 SP-X 的 vMedia 属 **LMEDIA/RMEDIA 授权模块**（AMI 采用按包授权），
+  本机开关 PUT 返回 200 却不生效，需要向 AMI / 技嘉取得 license key。
+- **设置页写操作部分验证**：用户增删改**已实测通过**；服务配置写入被 BMC 拒绝
+  （500 code 1198/1199，疑似需要扩展权限）；日期时间与网络（高危）未实测，界面上已如实标注。
+- **鼠标指针效果未在客机验证**：报文已与原厂逐字节核对一致并确认送达，
+  但当前主机停在 ESXi DCUI（本身不支持鼠标），需要一个带图形界面的客机来复核。
+- **BMC 会话表只有 148 格**，且同账号再登录会踢掉先前会话。代理已做单会话池化、
+  登录冷却与熔断以防打满；万一卡死，`docs/API.md` 第 7 节给了四级救场流程（含 IPMI 冷重置脚本）。
+
+## 免责声明
+
+本项目用于管理**自己拥有**的服务器硬件，逆向对象是自己这台机器上的固件前端。
+仓库内不含 AMI 的版权代码与二进制（`source.min.js` / `viewer.min.js` / `libs/kvm/*` 等已在
+`.gitignore` 中排除），KVM 解码 worker 由代理在运行时从 BMC 自身取回。

@@ -1,3 +1,5 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 // 复测：曲线 30→10% / 70→100%，arrSensor=[1,12]
 //   取第一个(32)→约14%(低≈1950) ｜ 取平均(50)→约55%(中≈3300) ｜ 取最大(68)→约96%(高≈4950)
 // 观察 50s；finally 恢复原档案并删除测试档案。
@@ -21,7 +23,7 @@ const sense = async () => {
   return { temp: p('CPU0_TEMP'), dts: p('CPU0_DTS'), cpuFan: p('CPU0_FAN') };
 };
 
-await req('POST', '/api/auth/login', { username: 'admin', password: 'REDACTED_BMC_PASSWORD' });
+await req('POST', '/api/auth/login', { username: 'admin', password: PASS });
 const modeBefore = (await req('GET', '/bmc/settings/fanprofile/mode')).json?.strMode;
 const before = await sense();
 console.log('原档案:', modeBefore, '| 当前:', JSON.stringify(before));

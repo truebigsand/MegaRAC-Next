@@ -1,3 +1,5 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 // 实验：确定风扇策略在选中多个源传感器时如何合并读数
 //
 // 方法：曲线 refs=[A,B] duty=[10,90]（A=CPU0_TEMP-2，B=CPU0_DTS+2），
@@ -41,7 +43,7 @@ const observe = async (label, seconds) => {
   return { cpuFan: avg('cpuFan'), sysFan1: avg('sysFan1'), temp: avg('temp'), dts: avg('dts') };
 };
 
-await req('POST', '/api/auth/login', { username: 'admin', password: 'REDACTED_BMC_PASSWORD' });
+await req('POST', '/api/auth/login', { username: 'admin', password: PASS });
 
 const modeBefore = (await req('GET', '/bmc/settings/fanprofile/mode')).json?.strMode;
 const before = await readSensors();

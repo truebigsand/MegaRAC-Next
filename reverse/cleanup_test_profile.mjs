@@ -1,3 +1,5 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 // 清理测试档案 ZZ_TEST_UI，顺带验证 DELETE 路径（代理修复后）
 const PROXY = 'http://127.0.0.1:5177';
 let cookie = '';
@@ -12,7 +14,7 @@ async function req(method, path, body) {
 }
 const names = (r) => { try { return JSON.parse(r).map((p) => p.strName).join(', '); } catch { return '(解析失败) ' + r.slice(0, 80); } };
 
-console.log('login:', (await req('POST', '/api/auth/login', { username: 'admin', password: 'REDACTED_BMC_PASSWORD' })).status);
+console.log('login:', (await req('POST', '/api/auth/login', { username: 'admin', password: PASS })).status);
 console.log('清理前:', names((await req('GET', '/bmc/settings/fanprofile/collection')).text));
 
 const del = await req('DELETE', '/bmc/settings/fanprofile/collection/ZZ_TEST_UI');

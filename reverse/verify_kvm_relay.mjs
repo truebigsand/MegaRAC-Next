@@ -4,10 +4,11 @@
 // 不依赖浏览器，用于在写 UI 之前确认服务端中继真的能送出视频流。
 import { WebSocket } from 'ws';
 import { writeFileSync } from 'node:fs';
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 
 const PROXY = 'http://127.0.0.1:5177';
 const USER = 'admin';
-const PASS = 'REDACTED_BMC_PASSWORD';
+const PASS = process.env.BMC_PASS || '';
 const SECONDS = Number(process.argv[2] || 15);
 
 const login = await fetch(PROXY + '/api/auth/login', {

@@ -4,10 +4,11 @@
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 import fs from 'node:fs';
 import path from 'node:path';
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 
 const BMC = 'https://192.168.0.200';
 const USER = process.env.BMC_USER || 'admin';
-const PASS = process.env.BMC_PASS || 'REDACTED_BMC_PASSWORD';
+const PASS = process.env.BMC_PASS || '';
 const OUT = 'reverse/samples';
 fs.mkdirSync(OUT, { recursive: true });
 

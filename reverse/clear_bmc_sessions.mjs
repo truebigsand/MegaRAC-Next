@@ -1,3 +1,5 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 // ⚠️ 用完务必注销：该 BMC 的 web 会话上限很小（148），泄漏会占满后
 // 导致登录被拒（Maximum number of sessions already in use）且 KVM 升级被降级。
 // 清理 BMC 泄漏会话：按服务列出会话并逐个 DELETE（原版"服务"页的同一套接口）
@@ -30,7 +32,7 @@ async function login() {
   const res = await fetch(PROXY + '/api/auth/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: 'admin', password: 'REDACTED_BMC_PASSWORD' }),
+    body: JSON.stringify({ username: 'admin', password: PASS }),
   });
   const sc = res.headers.getSetCookie?.() ?? [];
   if (sc.length) cookie = sc.map((c) => c.split(';')[0]).join('; ');

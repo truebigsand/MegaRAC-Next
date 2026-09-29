@@ -17,6 +17,13 @@ dist/
 *.sqlite3-journal
 data/
 
+# AMI 公开数据手册（可从 AMI 官网下载，不在仓库里再分发一份）
+reverse/spx_datasheet.pdf
+
+# Python
+__pycache__/
+*.pyc
+
 # 系统
 Thumbs.db
 .DS_Store

@@ -1,8 +1,9 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 // 验证档案更新协议：POST 是否只能创建、PUT 是否能更新、DELETE 路径是否有效。
 // 全程只创建一个一次性测试档案 ZZ_TEST_UI，最后删除；不改动运行模式。
 const PROXY = 'http://127.0.0.1:5177';
 const USER = process.env.BMC_USER || 'admin';
-const PASS = process.env.BMC_PASS || 'REDACTED_BMC_PASSWORD';
+const PASS = process.env.BMC_PASS || '';
 let cookie = '';
 
 async function req(method, path, body) {

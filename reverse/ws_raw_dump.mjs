@@ -1,13 +1,15 @@
 // 打印升级后的**原始字节**（不做 WS 帧解析），看 BMC 到底发了什么。
 import tls from 'node:tls';
 import { Agent, fetch as uFetch } from 'undici';
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 
 const HOST = '192.168.0.200';
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
 const fetch = (u, o = {}) => uFetch(u, { ...o, dispatcher: agent });
 const res = await fetch('https://' + HOST + '/api/session', {
   method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-  body: new URLSearchParams({ username: 'admin', password: 'REDACTED_BMC_PASSWORD' }).toString(),
+  body: new URLSearchParams({ username: 'admin', password: PASS }).toString(),
 });
 const data = JSON.parse(await res.text());
 const cookie = (res.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');

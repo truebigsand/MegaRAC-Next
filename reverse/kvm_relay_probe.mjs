@@ -6,11 +6,12 @@
 // 用法: node reverse/kvm_relay_probe.mjs [持续秒数]
 import { Agent, fetch as uFetch } from 'undici';
 import { WebSocket } from 'ws';
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 
 const BMC = 'https://192.168.0.200';
 const HOST = '192.168.0.200';
 const USER = 'admin';
-const PASS = 'REDACTED_BMC_PASSWORD';
+const PASS = process.env.BMC_PASS || '';
 const SECONDS = Number(process.argv[2] || 12);
 
 // fetch 走 undici，ws 走自己的 TLS 选项，两者各自关证书校验

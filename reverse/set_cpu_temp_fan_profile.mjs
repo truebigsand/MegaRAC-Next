@@ -8,10 +8,11 @@
 // 做法：新增档案 CPU_TEMP（含度最高的 default 原样保留，用于随时回退），
 //      再把运行模式切到 CPU_TEMP。
 import fs from 'node:fs';
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 
 const PROXY = 'http://127.0.0.1:5177';
 const USER = process.env.BMC_USER || 'admin';
-const PASS = process.env.BMC_PASS || 'REDACTED_BMC_PASSWORD';
+const PASS = process.env.BMC_PASS || '';
 const APPLY = process.argv.includes('--apply');
 
 let cookie = '';

@@ -1,3 +1,5 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 // 补充实验：曲线 30→50% / 70→100%，arrSensor=[1,12]
 //   取第一个(CPU0_TEMP=32) → 54%   ｜ 取平均(50) → 75% ｜ 取最大(DTS=68) → 96%
 // 三档占空比差异明显且都远离低转速平台，可同时证明"档案已生效"与"按哪条规则合并"。
@@ -22,7 +24,7 @@ const sense = async () => {
   return { temp: p('CPU0_TEMP'), dts: p('CPU0_DTS'), cpuFan: p('CPU0_FAN'), sysFan1: p('SYS_FAN1') };
 };
 
-await req('POST', '/api/auth/login', { username: 'admin', password: 'REDACTED_BMC_PASSWORD' });
+await req('POST', '/api/auth/login', { username: 'admin', password: PASS });
 const modeBefore = (await req('GET', '/bmc/settings/fanprofile/mode')).json?.strMode;
 const before = await sense();
 console.log('原运行档案:', modeBefore, '| 当前:', JSON.stringify(before));

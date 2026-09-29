@@ -1,3 +1,5 @@
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 // KVM 握手实测：按原版 viewer 的字节结构，用 Node 原生 WebSocket 连 wss://<bmc>/kvm
 //
 // 流程（来自 viewer.min.js 逆向）：
@@ -55,7 +57,7 @@ if (process.env.REUSE_COOKIE) {
 // BMC 在会话表吃紧时会瞬时失败（返回非 JSON），登录重试几次
 let login = null;
 for (let i = 1; i <= 4; i++) {
-  login = await proxyReq('POST', '/api/auth/login', { username: 'admin', password: 'REDACTED_BMC_PASSWORD' });
+  login = await proxyReq('POST', '/api/auth/login', { username: 'admin', password: PASS });
   console.log(`登录（第 ${i} 次）:`, login.status);
   if (login.status === 200) break;
   await new Promise((r) => setTimeout(r, 3000));

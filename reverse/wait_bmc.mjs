@@ -1,5 +1,7 @@
 // 等 BMC 的 web 会话表腾出空位（表满时连登录都会被拒）。
 import { Agent, fetch as uFetch } from 'undici';
+// ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
+const PASS = process.env.BMC_PASS || '';
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
 const fetch = (u, o = {}) => uFetch(u, { ...o, dispatcher: agent });
 const BMC = 'https://192.168.0.200';
@@ -8,7 +10,7 @@ const t0 = Date.now();
 while (Date.now() - t0 < MAX_MS) {
   const res = await fetch(BMC + '/api/session', {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ username: 'admin', password: 'REDACTED_BMC_PASSWORD' }).toString(),
+    body: new URLSearchParams({ username: 'admin', password: PASS }).toString(),
   });
   const text = await res.text();
   const stamp = new Date().toLocaleTimeString('zh-CN');

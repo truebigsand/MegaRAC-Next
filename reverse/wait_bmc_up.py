@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+import os
 import urllib.parse
 """等 BMC 重启完成：轮询登录，成功后打印会话数并注销。"""
 import json, time, sys, urllib.request, ssl
+# ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -24,7 +26,10 @@ def post(path, data, cookie=None, csrf=None):
 deadline = time.time() + 300
 while time.time() < deadline:
     status, text, cookies = post('/api/session',
-        urllib.parse.urlencode({'username': 'admin', 'password': 'REDACTED_BMC_PASSWORD'}).encode())
+        urllib.parse.urlencode({
+            'username': os.environ.get('BMC_USER', 'admin'),
+            'password': os.environ.get('BMC_PASS', ''),
+        }).encode())
     stamp = time.strftime('%H:%M:%S')
     if status == 200:
         data = json.loads(text)

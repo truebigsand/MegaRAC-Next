@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
+import os
 """只读：BMC 描述、电源、SEL 末尾若干条（看有没有 KVM 服务异常事件）。"""
 from pyghmi.ipmi import command
+# ⚠️ 需要 BMC 凭据：先设置环境变量 BMC_PASS 再运行
 
-c = command.Command(bmc='192.168.0.200', userid='admin', password='REDACTED_BMC_PASSWORD', timeout=15)
+c = command.Command(bmc='192.168.0.200', userid='admin', password=os.environ.get('BMC_PASS', ''), timeout=15)
 print('✓ IPMI 已连接')
 d = c.get_description()
 print('BMC:', d)
