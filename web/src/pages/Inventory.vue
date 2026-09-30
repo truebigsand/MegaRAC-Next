@@ -51,6 +51,14 @@ const fill = (v: string | undefined) => v || (augmented.value ? '—' : '待增�
 
 /** 只显示有内容的 FRU（这台机器上不少槽位是空的） */
 const frus = computed(() => (data.value?.fru ?? []).filter((f) => f.product.product || f.board.product || f.board.serial));
+
+/** 固件清单这块的状态说明（只在这块没就绪时展示；别用笼统的"增补尚未就绪"） */
+const firmwareHint = computed(() => {
+  const a = data.value?.sources.augment;
+  if (!a) return '后台预热中';
+  if (a.parts.firmware) return '已就绪';
+  return a.lastError ? `上次失败：${a.lastError}` : '后台预热中（首次取用约需几十秒）';
+});
 </script>
 
 <template>
@@ -70,8 +78,7 @@ const frus = computed(() => (data.value?.fru ?? []).filter((f) => f.product.prod
 
     <n-alert v-if="inv.error.value && !data" key="err" type="error" size="small">读取失败：{{ inv.error.value }}</n-alert>
     <n-alert v-else-if="data && !data.sources.redfish" key="aug" type="info" size="small">
-      Redfish 增补尚未就绪（后台预热中或该资源暂不可用：{{ data.sources.redfishReason }}），
-      BIOS / 序列号 / 固件组件清单暂时只显示 BMC 主接口能提供的内容。
+      固件组件清单尚未从 Redfish 取到（{{ firmwareHint }}），当前只显示 BMC 主接口能提供的内容。
     </n-alert>
 
     <!-- 宽屏两栏：左系统身份、右固件组件；窄屏自动叠成一栏 -->

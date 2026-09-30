@@ -11,6 +11,8 @@ export interface AugmentInfo {
   ageSec: number | null;
   rounds: number;
   lastError: string;
+  /** 三部分各自的就绪状态（系统信息 / Thermal 阈值 / 固件清单） */
+  parts: { system: boolean; thermal: boolean; firmware: boolean };
 }
 
 export interface Sensor {

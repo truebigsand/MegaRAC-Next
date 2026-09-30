@@ -1,14 +1,15 @@
 // Redfish 增补数据的**后台预热器**。
 //
-// 起因（实测）：这台 BMC 的 Redfish 即使成功也要几十秒——/api/overview 直接等它，
-// 结果 101 秒才回；/api/inventory 97 秒。而 UI 不能这么等。
+// 为什么需要它（实测）：这台 BMC 的 Redfish 即使成功也要几秒到几十秒，单个资源偶尔还会挂住。
+// 若让页面请求直接等它，/api/overview 会从 2 秒变成 101 秒。所以改成旁路刷新：
+// 请求路径只读缓存，本模块在后台按自己的节奏把缓存填满。
 //
-// 所以改成「旁路刷新」模型：
-//   · 请求路径**永不等 Redfish**，只用缓存里已有的增补数据（可能为空/略旧）；
-//   · 本模块在后台按自己的节奏刷新增补数据（单会话、限速、熔断全在 RedfishClient 里）；
-//   · 拿到了就更新缓存，前端下一次轮询自然就看到更丰富的字段。
-//
-// 这样即使 Redfish 完全挂死，UI 也只是少几个字段，绝不卡住。
+// 三条设计要点（都是被"一直不就绪"这个问题逼出来的）：
+//   1. **三块各自独立成循环**，不串在同一轮里。此前是一个 tick 里顺序 await 三个，
+//      前面那个一挂（最长 90 秒），后面两个就一直等——用户看到的就是"永远不就绪"。
+//   2. **登录后立刻踢一脚**（index.ts 调 kickAugmenter），不必等下一个周期。
+//   3. **背景请求用较短超时**（45 秒）。用户可见的请求不能短超时（abort 会毒死 Redfish 会话），
+//      但后台任务即使把会话弄脏也只影响自己——失败即换会话重登，代价可控，而挂着等 90 秒太贵。
 import { redfish } from './redfish.js';
 
 export interface ThermalInfo {
@@ -26,15 +27,24 @@ export interface FirmwareItem {
   source: string;
 }
 
+/** 每个部分最近的执行结果（用于诊断"到底哪块没就绪"） */
+export interface PartStatus {
+  ok: boolean;
+  at: number;
+  err: string;
+  attempts: number;
+}
+
 export interface AugmentState {
-  /** Redfish 的 Systems 成员（BIOS 版本/序列号/UUID/内存与 CPU 摘要/健康） */
+  /** Redfish 的 Systems/Self（BIOS 版本/序列号/UUID/内存与 CPU 摘要/健康） */
   system: Record<string, unknown> | null;
   /** 按归一化名（去空格大写）索引的 Thermal 阈值 */
   thermal: Map<string, ThermalInfo>;
   firmware: FirmwareItem[];
+  parts: Record<'system' | 'thermal' | 'firmware', PartStatus>;
   updatedAt: number;
   lastError: string;
-  /** 已完成多少轮刷新 */
+  /** 三个部分都成功过一次才算一轮完成 */
   rounds: number;
 }
 
@@ -42,28 +52,62 @@ export const augment: AugmentState = {
   system: null,
   thermal: new Map(),
   firmware: [],
+  parts: {
+    system: { ok: false, at: 0, err: '', attempts: 0 },
+    thermal: { ok: false, at: 0, err: '', attempts: 0 },
+    firmware: { ok: false, at: 0, err: '', attempts: 0 },
+  },
   updatedAt: 0,
   lastError: '',
   rounds: 0,
 };
 
-/** 后台刷新间隔：Redfish 慢，拉太长没必要（默认 90 秒） */
-const INTERVAL_MS = Number(process.env.RF_AUGMENT_INTERVAL_MS || 90_000);
-/** 启动后延迟多久开始第一轮（避免和用户登录、页面首屏抢资源） */
-const FIRST_DELAY_MS = Number(process.env.RF_AUGMENT_FIRST_DELAY_MS || 4_000);
-
-const FIRMWARE_TTL = Number(process.env.RF_FIRMWARE_TTL_MS || 30 * 60_000);
-let firmwareAt = 0;
+/** 后台任务的单请求超时（见文件顶部第 3 条） */
+const BG_TIMEOUT_MS = Number(process.env.RF_BG_TIMEOUT_MS || 45_000);
+/** 某部分失败后多久重试（比成功后的完整周期短得多）：
+ *  实测 /Chassis/Self/Thermal 时好时坏（要聚合 18 个板载传感器，偶尔挂死），
+ *  按 120 秒周期等的话"就绪"会拖很久。*/
+const FAIL_RETRY_MS = Number(process.env.RF_FAIL_RETRY_MS || 30_000);
+/** 各部分的刷新周期 */
+const INTERVALS = {
+  system: Number(process.env.RF_AUGMENT_INTERVAL_MS || 90_000),
+  thermal: Number(process.env.RF_THERMAL_INTERVAL_MS || 120_000),
+  // 固件清单变化极慢（除非正在刷写），且它是三者里最花请求的，周期拉长
+  firmware: Number(process.env.RF_FIRMWARE_INTERVAL_MS || 30 * 60_000),
+};
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 
-async function refreshThermal() {
-  const ch = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/Chassis', 300_000);
+// ------------------------------------------------------------------ 三块的具体逻辑
+
+/** 系统身份。直接打已知成员路径（实测 /Systems/Self 稳定 200/2s），集合只作兜底。 */
+async function refreshSystem(): Promise<void> {
+  let sys: Record<string, unknown>;
+  try {
+    sys = await redfish.get<Record<string, unknown>>('/redfish/v1/Systems/Self', 0, BG_TIMEOUT_MS);
+  } catch {
+    const coll = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/Systems', 0, BG_TIMEOUT_MS);
+    const target = coll.Members?.[0]?.['@odata.id'];
+    if (!target) throw new Error('Systems 集合没有成员');
+    sys = await redfish.get<Record<string, unknown>>(target, 0, BG_TIMEOUT_MS);
+  }
+  augment.system = sys;
+}
+
+/** 发现过的 chassis 成员（首轮从集合拿，之后直接用，省一次可能挂起的请求） */
+let chassisMembers: string[] = [];
+
+async function refreshThermal(): Promise<void> {
+  if (chassisMembers.length === 0) {
+    const coll = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/Chassis', 0, BG_TIMEOUT_MS);
+    chassisMembers = (coll.Members ?? []).map((m) => m['@odata.id']).filter(Boolean);
+  }
   const next = new Map<string, ThermalInfo>();
-  for (const m of ch.Members ?? []) {
+  for (const uri of chassisMembers) {
     const t = await redfish.get<{ Temperatures?: Record<string, unknown>[]; Fans?: Record<string, unknown>[] }>(
-      `${m['@odata.id']}/Thermal`,
-      120_000,
+      `${uri}/Thermal`,
+      0,
+      BG_TIMEOUT_MS,
     );
     for (const x of [...(t.Temperatures ?? []), ...(t.Fans ?? [])]) {
       const key = String(x.Name ?? x.MemberId ?? '').replace(/\s+/g, '').toUpperCase();
@@ -80,26 +124,16 @@ async function refreshThermal() {
   if (next.size > 0) augment.thermal = next;
 }
 
-async function refreshSystem() {
-  // 两条路都试：集合（标准做法）→ 集合里给出的成员；实测这台 BMC 的成员恒为 /Systems/Self，
-  // 而集合本身偶发超时，所以集合失败时直接打成员路径（实测该路径稳定 200/2s）。
-  let target = '/redfish/v1/Systems/Self';
-  try {
-    const coll = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/Systems', 300_000);
-    target = coll.Members?.[0]?.['@odata.id'] ?? target;
-  } catch {
-    /* 集合拿不到就用已知成员路径 */
-  }
-  const sys = await redfish.get<Record<string, unknown>>(target, 180_000);
-  augment.system = sys;
-}
-
-async function refreshFirmware() {
-  const inv = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/UpdateService/FirmwareInventory', 600_000);
+async function refreshFirmware(): Promise<void> {
+  const inv = await redfish.get<{ Members?: { '@odata.id': string }[] }>(
+    '/redfish/v1/UpdateService/FirmwareInventory',
+    0,
+    BG_TIMEOUT_MS,
+  );
   const out: FirmwareItem[] = [];
   for (const m of inv.Members ?? []) {
     try {
-      const d = await redfish.get<Record<string, unknown>>(m['@odata.id'], 600_000);
+      const d = await redfish.get<Record<string, unknown>>(m['@odata.id'], 0, BG_TIMEOUT_MS);
       out.push({
         name: String(d.Name ?? m['@odata.id'].split('/').pop()),
         version: String(d.Version ?? ''),
@@ -111,54 +145,82 @@ async function refreshFirmware() {
     }
   }
   if (out.length) augment.firmware = out;
-  firmwareAt = Date.now();
 }
 
-/** 一轮刷新：三块各自独立失败，互不影响 */
-async function tick() {
-  // 还没人登录时没有凭据可用：静默跳过，不要记成错误。
-  // （启动后 4 秒就会跑第一轮，而登录一定在这之后——之前这里会打出一行
-  //  "错误=未配置凭据"，让人以为是故障。）
-  if (!redfish.available) return;
-  const errors: string[] = [];
-  // 固件清单变化极慢（除非正在刷写），且它是三个里最慢的（1+每个组件一次请求），
-  // 所以只在必要时刷新，避免每一轮都把时间耗在它上面。
-  const firmwareDue = Date.now() - firmwareAt > FIRMWARE_TTL;
-  const jobs = [
-    ['system', refreshSystem],
-    ['thermal', refreshThermal],
-    ...(firmwareDue ? [['firmware', refreshFirmware] as const] : []),
-  ] as const;
-  for (const [label, fn] of jobs) {
-    try {
-      await fn();
-    } catch (e) {
-      errors.push(`${label}: ${(e as Error).message}`);
-    }
+// ------------------------------------------------------------------ 独立循环
+
+interface Part {
+  key: keyof AugmentState['parts'];
+  fn: () => Promise<void>;
+  interval: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  running: boolean;
+}
+
+const parts: Part[] = [
+  { key: 'system', fn: refreshSystem, interval: INTERVALS.system, timer: null, running: false },
+  { key: 'thermal', fn: refreshThermal, interval: INTERVALS.thermal, timer: null, running: false },
+  { key: 'firmware', fn: refreshFirmware, interval: INTERVALS.firmware, timer: null, running: false },
+];
+
+let logger: ((msg: string) => void) | null = null;
+let stopped = false;
+
+function refreshLastError(): void {
+  augment.lastError = Object.values(augment.parts)
+    .map((x) => x.err)
+    .filter(Boolean)
+    .join(' | ');
+}
+
+async function runPart(p: Part): Promise<void> {
+  if (stopped) return;
+  if (p.running) return; // 上一轮还没跑完（慢），本轮跳过
+  if (!redfish.available) {
+    // 还没登录：静默等待。登录时 kickAugmenter() 会立刻把我们叫起来。
+    p.timer = setTimeout(() => void runPart(p), 5_000);
+    return;
   }
-  augment.updatedAt = Date.now();
-  augment.rounds++;
-  augment.lastError = errors.join(' | ');
+  p.running = true;
+  const t0 = Date.now();
+  const st = augment.parts[p.key];
+  st.attempts++;
+  try {
+    await p.fn();
+    st.ok = true;
+    st.err = '';
+    st.at = Date.now();
+    augment.updatedAt = Date.now();
+    refreshLastError();
+    if (Object.values(augment.parts).every((x) => x.ok)) augment.rounds++;
+    logger?.(`Redfish 增补「${p.key}」就绪（用时 ${Math.round((Date.now() - t0) / 1000)}s）`);
+  } catch (e) {
+    st.ok = false;
+    st.err = (e as Error).message;
+    st.at = Date.now();
+    refreshLastError();
+    logger?.(`Redfish 增补「${p.key}」失败（${Math.round((Date.now() - t0) / 1000)}s）：${st.err}`);
+  } finally {
+    p.running = false;
+    const nextDelay = st.ok ? p.interval : Math.min(FAIL_RETRY_MS, p.interval);
+    if (!stopped) p.timer = setTimeout(() => void runPart(p), nextDelay);
+  }
+}
+
+/** 立刻跑一轮（登录成功后调用；已在跑的部分会被跳过） */
+export function kickAugmenter(): void {
+  for (const p of parts) {
+    if (p.running) continue;
+    if (p.timer) clearTimeout(p.timer);
+    p.timer = setTimeout(() => void runPart(p), 0);
+  }
 }
 
 export function startAugmenter(log: (msg: string) => void): void {
-  let stopped = false;
-  const loop = async () => {
-    if (stopped) return;
-    const t0 = Date.now();
-    await tick();
-    const took = Math.round((Date.now() - t0) / 1000);
-    // 只在第一轮完成或确实出错时打一行，其余保持安静
-    if (augment.rounds === 1 || augment.lastError) {
-      log(
-        `Redfish 增补刷新 #${augment.rounds}：用时 ${took}s，系统信息=${augment.system ? '有' : '无'}，` +
-          `Thermal=${augment.thermal.size} 项，固件清单=${augment.firmware.length} 项` +
-          `${augment.lastError ? '，错误=' + augment.lastError : ''}`,
-      );
-    }
-    setTimeout(loop, INTERVAL_MS);
-  };
-  setTimeout(loop, FIRST_DELAY_MS);
-  process.on('SIGINT', () => (stopped = true));
-  process.on('SIGTERM', () => (stopped = true));
+  logger = log;
+  // 三块错开一点起步，避免同时挤进 Redfish 的串行队列
+  parts.forEach((p, i) => {
+    p.timer = setTimeout(() => void runPart(p), i * 800);
+  });
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => (stopped = true));
 }

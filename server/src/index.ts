@@ -11,7 +11,7 @@ import { HistorySampler } from './history/sampler.js';
 import { registerKvm, closeAllKvm } from './kvm-route.js';
 import { redfish } from './redfish.js';
 import { buildOverview, buildSensorSnapshot, buildSel, buildInventory } from './models.js';
-import { startAugmenter } from './augment.js';
+import { startAugmenter, kickAugmenter, augment } from './augment.js';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
@@ -91,6 +91,9 @@ app.post('/api/auth/login', async (req, reply) => {
   }
   // Redfish 是另一套会话体系，用同一份凭据惰性建会话（只在真正需要增补数据时才建）
   redfish.configure(username, password);
+  // 立刻开始预热增补数据：否则要等到下一个周期（最长 90 秒）才开始，
+  // 而用户看到的是"Redfish 增补尚未就绪"。
+  kickAugmenter();
   const token = randomUUID();
   createSession(token, client);
   reply.setCookie(COOKIE_NAME, token, {
@@ -229,6 +232,12 @@ app.get('/api/health', async () => ({
   ok: true,
   browserSessions: sessionCount(),
   redfish: redfish.stat(),
+  // 增补数据的逐项状态：比"就绪/未就绪"更能说明问题出在哪一块
+  augment: {
+    rounds: augment.rounds,
+    parts: augment.parts,
+    lastError: augment.lastError,
+  },
 }));
 
 // ---------- BMC 会话维护 ----------

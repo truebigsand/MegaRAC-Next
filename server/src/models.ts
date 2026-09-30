@@ -23,6 +23,8 @@ export interface AugmentInfo {
   ageSec: number | null;
   rounds: number;
   lastError: string;
+  /** 三部分各自的就绪状态——比"完成过几轮"更能说明当前能看到什么 */
+  parts: { system: boolean; thermal: boolean; firmware: boolean };
   redfish: ReturnType<typeof redfish.stat>;
 }
 
@@ -46,6 +48,11 @@ const augmentInfo = (redfishUsed: boolean): AugmentInfo => ({
   ageSec: augment.updatedAt ? Math.round((Date.now() - augment.updatedAt) / 1000) : null,
   rounds: augment.rounds,
   lastError: augment.lastError,
+  parts: {
+    system: augment.parts.system.ok,
+    thermal: augment.parts.thermal.ok,
+    firmware: augment.parts.firmware.ok,
+  },
   redfish: redfish.stat(),
 });
 

@@ -196,9 +196,11 @@ export class RedfishClient {
    * 取一个 Redfish 资源。
    * @param path 形如 /redfish/v1/Managers/Self
    * @param ttlMs 缓存有效期（0 = 不缓存）
+   * @param timeoutMs 本次请求的超时覆盖值。背景任务用较短超时（挂着的代价更小，
+   *                  且弄脏会话只影响它自己）；用户可见的请求保持默认的长超时。
    * @returns 成功返回 body；失败抛出（调用方应回退到经典源）
    */
-  async get<T = unknown>(path: string, ttlMs = 5000): Promise<T> {
+  async get<T = unknown>(path: string, ttlMs = 5000, timeoutMs?: number): Promise<T> {
     if (!this.available) throw new Error('redfish_not_configured');
     if (this.throttled) throw new Error(`redfish_abuse_backoff: ${this.lastReason}`);
     if (this.isBroken(path)) throw new Error(`redfish_broken: ${path}`);
@@ -214,7 +216,7 @@ export class RedfishClient {
           headers: { 'x-auth-token': this.token },
           dispatcher: agent as unknown as Dispatcher,
           redirect: 'manual',
-          signal: AbortSignal.timeout(TIMEOUT_MS),
+          signal: AbortSignal.timeout(timeoutMs ?? TIMEOUT_MS),
         });
       } catch (e) {
         // 超时/连接错：会话大概率已被毒死，丢掉 token 下次重登
