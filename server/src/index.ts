@@ -151,7 +151,7 @@ app.get('/bmc/*', async (req, reply) => {
       if (token && dropSession(token)) {
         app.log.warn('BMC 会话失效且重登失败，已丢弃浏览器会话（需重新登录）');
       }
-      return reply.code(401).send({ error: 'bmc_session_expired' });
+      return reply.code(401).send({ error: 'bmc_session_expired', detail: e.reason || 'BMC 会话已过期' });
     }
     app.log.error(`BMC GET 失败 ${path}: ${(e as Error).message}`);
     return reply.code(502).send({ error: 'bmc_unreachable', detail: (e as Error).message });
@@ -179,7 +179,7 @@ async function forwardWrite(
       if (token && dropSession(token)) {
         app.log.warn('BMC 会话失效且重登失败，已丢弃浏览器会话（需重新登录）');
       }
-      return reply.code(401).send({ error: 'bmc_session_expired' });
+      return reply.code(401).send({ error: 'bmc_session_expired', detail: e.reason || 'BMC 会话已过期' });
     }
     app.log.error(`BMC ${method} 失败 ${path}: ${(e as Error).message}`);
     return reply.code(502).send({ error: 'bmc_unreachable', detail: (e as Error).message });

@@ -31,14 +31,18 @@ async function handle(res: Response): Promise<unknown> {
   if (res.status === 401) {
     // 只有明确"未登录"才把用户踢回登录页；BMC 侧的短暂问题不应该让用户重登
     let code = '';
+    let detail = '';
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as { error?: string; detail?: string };
       code = body.error ?? '';
+      detail = body.detail ?? '';
     } catch {
       /* 非 JSON */
     }
     if (code === 'not_logged_in' || code === 'bmc_session_expired') onUnauthorized();
-    throw new ApiError(code === 'not_logged_in' ? '未登录' : 'BMC 会话已过期', 401, code);
+    // 带上代理给的具体原因（例如"BMC 的 web 会话表已满"）——这跟"登录超时"是两回事
+    const msg = code === 'not_logged_in' ? '未登录' : detail || 'BMC 会话已过期，请重新登录';
+    throw new ApiError(msg, 401, code);
   }
   if (!res.ok) {
     let detail = '';

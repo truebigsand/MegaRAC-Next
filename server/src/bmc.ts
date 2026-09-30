@@ -30,10 +30,21 @@ export interface BmcResult {
 }
 
 export class BmcSessionExpiredError extends Error {
-  constructor() {
+  /**
+   * @param reason 具体原因（例如"BMC 的 web 会话表已满"）。BMC 会话表满与"会话过期"
+   *   在界面上是完全不同的问题，笼统报"已过期"会让人以为是超时，查半天。
+   */
+  constructor(readonly reason = '') {
     super('bmc_session_expired');
   }
 }
+
+/** web 会话表满时 BMC 返回的错误码（实测 15000） */
+const BMC_CODE_SESSION_TABLE_FULL = 15000;
+export const SESSION_TABLE_FULL_MSG =
+  'BMC 的 web 会话表已满（上限 148 条），新登录被拒。' +
+  '常见原因是代理/脚本反复登录又没注销留下的孤儿会话（开发时热重载尤其容易攒）。' +
+  '救援：IPMI 冷复位清空会话表（reverse/ipmi_reset_bmc.py，主机与虚拟机不受影响），或等会话超时（约 30 分钟）。';
 
 export class BmcClient {
   readonly username: string;
@@ -48,6 +59,8 @@ export class BmcClient {
   private loginInFlight: Promise<void> | null = null;
   /** 连续"重登后仍然 401"的次数，达到上限就熔断 */
   private reloginFailures = 0;
+  /** 最近一次登录失败的原因（用于把"会话表满"这类真实原因透传给界面） */
+  private lastLoginReason = '';
 
   constructor(username: string, password: string) {
     this.username = username;
@@ -160,9 +173,15 @@ export class BmcClient {
       /* 非 JSON（可能返回 HTML）按失败处理 */
     }
     if (res.status !== 200 || data.ok !== 0 || typeof data.CSRFToken !== 'string') {
+      if (Number(data.code) === BMC_CODE_SESSION_TABLE_FULL) {
+        this.lastLoginReason = SESSION_TABLE_FULL_MSG;
+        throw new Error(SESSION_TABLE_FULL_MSG);
+      }
       const err = new Error(data.error ? String(data.error) : `BMC 登录失败（HTTP ${res.status}）`);
+      this.lastLoginReason = err.message;
       throw err;
     }
+    this.lastLoginReason = '';
     this.csrf = data.CSRFToken;
     this.racSessionId = Number(data.racsession_id ?? 0);
     this.loggedIn = true;
@@ -189,7 +208,7 @@ export class BmcClient {
       // 继续自动重登只会疯狂建会话（见 LOGIN_COOLDOWN_MS）
       if (this.reloginFailures >= MAX_CONSECUTIVE_RELOGIN_FAILURES) {
         this.loggedIn = false;
-        throw new BmcSessionExpiredError();
+        throw new BmcSessionExpiredError(this.lastLoginReason);
       }
       try {
         await this.login();
@@ -197,7 +216,7 @@ export class BmcClient {
       } catch {
         this.reloginFailures++;
         this.loggedIn = false;
-        throw new BmcSessionExpiredError();
+        throw new BmcSessionExpiredError(this.lastLoginReason);
       }
       if (res.status === 401) {
         this.reloginFailures++;

@@ -441,6 +441,23 @@ USB 头 32B: "IUSB    "(8) | major u8=1 | minor u8=0 | hdrSize u8=32 | 校验和
 - **真正卡登录的是会话列表长度**（上限 `maximum_sessions`，web = 148）。
   列表满了新登录直接 401：`{"error":"Maximum number of sessions already in use","code":15000}`。
 
+### 会话表是怎么被攒满的（2026-09-30 复盘）
+
+除了脚本反复登录不注销，**开发时热重载是主要来源**：`tsx watch` 每次代码改动都会重启代理进程，
+老进程来不及 `DELETE /api/session`，它持有的 BMC 会话就成了孤儿——一晚上改几十次代码就能攒满 148 格。
+孤儿会话要到会话超时（web 服务 `time_out=1800`，即 30 分钟）才自然释放。
+
+**踩到时的正确报告方式**：会话表满与"会话过期"在界面上是完全不同的问题，不能都报"会话已过期"
+（会让人以为是超时，白查半天）。现已如此实现：
+- `server/src/bmc.ts` 识别登录返回的 `code 15000` → 抛出带原因的 `BmcSessionExpiredError`，
+  消息直接说明"web 会话表已满（148 条）"、成因与救援方式；
+- 代理 `/bmc/*` 的 401 响应带上 `detail`；前端 `client.ts` 优先显示该 detail。
+- 另注：`/api/settings/service-sessions` **不列 web 会话**（实测同账号连登 5 次后它仍返回 0 条），
+  所以别用它判断 web 会话槽位占用——只能等登录被拒（`code 15000`）才知道满了。
+
+**救援**：`reverse/ipmi_reset_bmc.py`（IPMI 冷复位，约 2.5 分钟，主机与虚拟机不受影响）。
+表满时**登录都进不去**，所以 UI 上的「清理僵尸会话」按钮此刻用不了——冷复位是唯一出路。
+
 **表满之后的表现极具误导性**：
 - `/kvm` 的 WebSocket 升级**看起来成功**：先回 `HTTP/1.1 101 Switching Protocols`，
   紧接着在同一连接里又发一个**完整的 `HTTP/1.1 200 OK` 响应**（`Content-Encoding: gzip`、
