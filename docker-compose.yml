@@ -15,7 +15,8 @@ services:
     environment:
       # BMC 地址（换成你自己的）
       BMC_BASE: "https://192.168.0.200"
-      # 只让内网/VPN 访问；若前面挂了 TLS 反代，把它设为 127.0.0.1 并配上 COOKIE_SECURE=1
+      # 监听所有网卡（默认）。本产品定位是内网/VPN 工具，请自行保证 5177 不暴露到公网。
+      # 若想只让本机访问（前面挂 TLS/鉴权反代），把这里改成 127.0.0.1 并打开 COOKIE_SECURE=1。
       HOST: "0.0.0.0"
       PORT: "5177"
       TZ: "Asia/Shanghai"

@@ -16,6 +16,7 @@ import { registerKvm, closeAllKvm } from './kvm-route.js';
 import { redfish } from './redfish.js';
 import { buildOverview, buildSensorSnapshot, buildSel, buildInventory } from './models.js';
 import { startAugmenter, kickAugmenter, augment } from './augment.js';
+import { resetBmcWithCredentials } from './bmc-reset.js';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
@@ -246,6 +247,21 @@ app.get('/api/inventory', async (req, reply) => {
   const s = sessionOf(req);
   if (!s) return reply.code(401).send({ error: 'not_logged_in' });
   return buildInventory(s.client);
+});
+
+// ---------- 救援：用登录页填的账密重置 BMC ----------
+//
+// 刻意**不要求已登录**：这个入口就是给"BMC web 会话表满（错误码 15000）、
+// 连登录都进不去"准备的（此时经典接口全线被拒，而实测 Redfish 仍可建会话）。
+// 凭据校验由 BMC 的 Redfish 登录完成；失败/频繁请求有冷却，操作会记日志。
+app.post('/api/maintenance/reset-bmc', async (req, reply) => {
+  const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
+  if (!username || !password) return reply.code(400).send({ error: '需要 BMC 用户名与密码' });
+  app.log.warn(`收到 BMC 重置请求（用户 ${username}，来自 ${req.ip}）`);
+  const r = await resetBmcWithCredentials(username, password);
+  if (r.ok) app.log.warn('BMC 重置指令已发出');
+  else app.log.warn(`BMC 重置失败：${r.message}`);
+  return reply.code(r.ok ? 200 : r.status).send({ ok: r.ok, message: r.message });
 });
 
 // ---------- 健康检查 ----------

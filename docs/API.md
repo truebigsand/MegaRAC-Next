@@ -455,8 +455,16 @@ USB 头 32B: "IUSB    "(8) | major u8=1 | minor u8=0 | hdrSize u8=32 | 校验和
 - 另注：`/api/settings/service-sessions` **不列 web 会话**（实测同账号连登 5 次后它仍返回 0 条），
   所以别用它判断 web 会话槽位占用——只能等登录被拒（`code 15000`）才知道满了。
 
-**救援**：`reverse/ipmi_reset_bmc.py`（IPMI 冷复位，约 2.5 分钟，主机与虚拟机不受影响）。
-表满时**登录都进不去**，所以 UI 上的「清理僵尸会话」按钮此刻用不了——冷复位是唯一出路。
+**救援**（两条路）：
+
+1. **Redfish 重置（首选，代理已做进登录页的「重置 BMC」按钮）**：
+   `POST /redfish/v1/Sessions` 建会话 → `POST /redfish/v1/Managers/Self/Actions/Manager.Reset`，
+   body `{"ResetType":"ForceRestart"}`（参数规格取自 `Managers/Self/ResetActionInfo`，只允许 ForceRestart）。
+   ⚠️ 表满时经典接口全线被拒，**但 Redfish 仍能建会话**（2026-09-30 实测），所以这是唯一能"自己救自己"的通道。
+   实测：发出后 19 秒下线、145 秒恢复，配置保留。实现见 `server/src/bmc-reset.ts`。
+2. `reverse/ipmi_reset_bmc.py`（IPMI 冷复位，约 2.5 分钟，主机与虚拟机不受影响）——UI 完全起不来时用。
+
+注：UI 上的「清理僵尸会话」按钮在表满时用不了（它自己也要求已登录）。
 
 **表满之后的表现极具误导性**：
 - `/kvm` 的 WebSocket 升级**看起来成功**：先回 `HTTP/1.1 101 Switching Protocols`，

@@ -113,6 +113,21 @@ export async function bmcSend<T>(method: 'POST' | 'PUT' | 'DELETE', path: string
   return (await handle(res)) as T;
 }
 
+/**
+ * 用填写的 BMC 账密重置 BMC（管理控制器冷复位）。
+ * 给"web 会话表满、连登录都进不去"当救援口用——所以它**不需要先登录**。
+ */
+export async function resetBmc(username: string, password: string): Promise<string> {
+  const res = await fetch('/api/maintenance/reset-bmc', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; error?: string };
+  if (!res.ok || !data.ok) throw new ApiError(data.message || data.error || `重置失败（HTTP ${res.status}）`, res.status);
+  return data.message ?? '重置指令已发出';
+}
+
 /** 代理自身的接口（非 BMC 转发），如 /api/history* */
 export function localGet<T>(path: string): Promise<T> {
   return dedupGet<T>(path);

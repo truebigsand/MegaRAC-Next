@@ -15,7 +15,7 @@
 //      HTTP 层封禁（连登录都 403），约 3 分钟后自愈。所以请求串行 + 最小间隔 + 限流令牌桶。
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 
-const BMC_BASE = process.env.BMC_BASE || 'https://192.168.0.200';
+export const BMC_BASE = process.env.BMC_BASE || 'https://192.168.0.200';
 /** 单请求超时：必须给足。见铁律 1——abort 会毒死会话，宁可慢也不能掐。 */
 const TIMEOUT_MS = Number(process.env.RF_TIMEOUT_MS || 90_000);
 /** 两次 Redfish 请求之间的最小间隔（毫秒） */
