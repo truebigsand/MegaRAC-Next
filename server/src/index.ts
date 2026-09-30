@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import { randomUUID } from 'node:crypto';
@@ -17,6 +17,7 @@ import { redfish } from './redfish.js';
 import { buildOverview, buildSensorSnapshot, buildSel, buildInventory } from './models.js';
 import { startAugmenter, kickAugmenter, augment } from './augment.js';
 import { resetBmcWithCredentials } from './bmc-reset.js';
+import { createLogger, LOG_PRETTY } from './log.js';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
@@ -50,24 +51,35 @@ const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 const app = Fastify({
   ...(TRUST_PROXY ? { trustProxy: true } : {}),
-  logger: {
-    level: 'info',
-    transport: undefined,
-    // 自定义请求序列化器：默认那个打的是 **socket 地址**，反代后面永远是代理 IP；
-    // 这里额外带上 request.ip（开了 TRUST_PROXY 时会取 X-Forwarded-For）与对端地址，
-    // 两者并排一眼就能看出"真实客户端"与"直连对端（代理）"。
-    serializers: {
-      req(request: import('fastify').FastifyRequest) {
-        return {
-          method: request.method,
-          url: request.url,
-          host: request.headers.host,
-          ip: request.ip,
-          peer: request.socket?.remoteAddress,
-        };
-      },
-    },
-  },
+  // 日志格式化见 log.ts：默认输出人读的单行文本，LOG_FORMAT=json 可切回机器可读的 JSON
+  loggerInstance: createLogger(),
+  // 关掉内置的 "incoming request" / "request completed" 两行，改为 onResponse 里**一行**输出
+  // （内置两行的 bindings 里没有 URL，凑不出一条完整记录）。
+  // 用 logController 而不是顶层 disableRequestLogging——后者在 Fastify 5.12 起已废弃并会打警告。
+  logController: new LogController({ disableRequestLogging: true }),
+});
+
+// 每个请求一行：状态码 + 耗时 + 客户端地址。
+// ip 是 request.ip（开了 TRUST_PROXY 时取自 X-Forwarded-For），peer 是直连对端（反代后面是代理地址）。
+// 成功请求记在 debug：前端轮询密度不低，默认（info）只看应用事件与异常，需要时用 LOG_LEVEL=debug 打开。
+app.addHook('onResponse', async (req, reply) => {
+  const fields = {
+    status: reply.statusCode,
+    ms: Math.round(reply.elapsedTime),
+    ip: req.ip,
+    peer: req.socket?.remoteAddress,
+    host: req.headers.host,
+    reqId: req.id,
+  };
+  const line = `${req.method} ${req.url}`;
+  if (reply.statusCode >= 500) app.log.error(fields, line);
+  else if (reply.statusCode >= 400 && reply.statusCode !== 401) app.log.warn(fields, line);
+  else if (reply.statusCode === 401) app.log.debug(fields, line); // 未登录/会话过期是本应用的正常流程
+  else app.log.debug(fields, line);
+});
+
+app.addHook('onError', async (req, _reply, err) => {
+  app.log.error({ err, ip: req.ip, method: req.method, url: req.url }, '请求处理出错');
 });
 
 await app.register(cookie);
@@ -283,7 +295,7 @@ app.get('/api/inventory', async (req, reply) => {
 app.post('/api/maintenance/reset-bmc', async (req, reply) => {
   const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
   if (!username || !password) return reply.code(400).send({ error: '需要 BMC 用户名与密码' });
-  app.log.warn(`收到 BMC 重置请求（用户 ${username}，来自 ${req.ip}）`);
+  app.log.warn({ user: username, ip: req.ip, peer: req.socket?.remoteAddress }, '收到 BMC 重置请求');
   const r = await resetBmcWithCredentials(username, password);
   if (r.ok) app.log.warn('BMC 重置指令已发出');
   else app.log.warn(`BMC 重置失败：${r.message}`);
@@ -380,7 +392,14 @@ if (existsSync(path.join(WEB_DIST, 'index.html'))) {
 startAugmenter((m) => app.log.info(m));
 
 app.listen({ host: HOST, port: PORT }).then(() => {
-  app.log.info(`MegaRAC-Next 代理已启动 http://${HOST}:${PORT}${TRUST_PROXY ? '（已信任反代头，req.ip 取 X-Forwarded-For）' : ''}`);
+  app.log.info(`MegaRAC-Next 代理已启动 http://${HOST}:${PORT}`);
+  app.log.info(
+    `日志格式=${LOG_PRETTY ? 'pretty（人读；LOG_FORMAT=json 可切机器可读）' : 'json'}` +
+      `，级别=${app.log.level}${TRUST_PROXY ? '，已信任反代头（req.ip 取 X-Forwarded-For）' : ''}`,
+  );
+  if (app.log.level !== 'debug' && app.log.level !== 'trace') {
+    app.log.info('请求明细默认不打印（轮询较密）；需要逐请求日志时设 LOG_LEVEL=debug');
+  }
 });
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

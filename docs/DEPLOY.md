@@ -45,6 +45,8 @@ BMC_BASE=https://192.168.0.200 npm start
 | `PORT` | `5177` | 监听端口 |
 | `WEB_DIST` | `web/dist`（相对本进程文件定位） | 前端产物目录；不存在时本进程只提供 API |
 | `COOKIE_SECURE` | 关 | 置 `1` 时会话 cookie 带 `Secure`——**放在 HTTPS 后面时必须打开** |
+| `LOG_FORMAT` | `pretty` | 日志格式：`pretty` = 人读单行（默认）；`json` = 与 pino 同构的单行 JSON，便于 journald/日志管道用 `jq` 过滤 |
+| `LOG_LEVEL` | `info` | 日志级别。默认只打应用事件与 4xx/5xx；**设 `debug` 会逐请求输出一行**（含客户端 IP、状态码、耗时）——排障时用 |
 | `TRUST_PROXY` | 关 | 置 `1` 时采信 `X-Forwarded-For`/`-Proto`（放在反向代理后面时必须打开，否则 `req.ip` 永远是代理地址，日志与审计里看不到真实客户端）。直接对客户端暴露时**不要**打开：那会让访问者能伪造来源 IP |
 | `HISTORY_DB` | `server/data/history.sqlite3` | 历史趋势库；相对路径按服务端目录解析 |
 | `BMC_TIMEOUT_MS` | `30000` | 经典接口单请求超时 |
@@ -212,8 +214,19 @@ python reverse/ipmi_reset_bmc.py      # 需要 pyghmi 与 BMC_PASS；约 2.5 分
 | KVM 连上但键鼠无效 | 说明本会话是从属（BMC 侧还有主控），代理会自动申请完全控制；若旧会话没释放，等它超时 |
 | 历史趋势空 | 采样器借用登录会话，**需要至少有一个浏览器登录着**才会采样 |
 
-**日志**：pino JSON 输出到 stdout（systemd → journald，Docker → `docker logs`）。
-`GET /api/health` 返回代理自身状态、浏览器会话数、Redfish 客户端与增补各部分的就绪情况，适合做监控探针。
+**日志**：输出到 stdout（systemd → journald，Docker → `docker logs`），默认是人读的单行文本：
+
+```
+18:25:02.465 WRN GET /api/nope  status=404 ms=1 ip=127.0.0.1 peer=127.0.0.1 host=127.0.0.1:5177 reqId=req-2
+18:25:05.271 INF 浏览器会话建立 (BMC racsession_id=4)，浏览器会话数=1（BMC 侧共享 1 条）
+18:26:03.117 INF Redfish 增补「system」就绪（用时 6s）
+```
+
+- **默认（`LOG_LEVEL=info`）只打事件与异常**，不打逐请求明细（前端轮询密度不低，打出来会刷屏）；
+  `LOG_LEVEL=debug` 打开后每个请求一行，含**客户端 IP**（`ip`，反代场景需同时开 `TRUST_PROXY`）、
+  状态码与耗时；`401` 记在 debug 级（未登录/会话过期是本应用的正常流程）。
+- **要给日志管道解析**时用 `LOG_FORMAT=json`（单行 JSON，字段与 pino 同构，`level` 是数字）。
+- `GET /api/health` 返回代理自身状态、浏览器会话数、Redfish 客户端与增补各部分的就绪情况，适合做监控探针。
 
 ## 8. 升级
 
