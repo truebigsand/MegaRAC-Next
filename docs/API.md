@@ -620,7 +620,7 @@ IUSB 头: 0..7 "IUSB    " | 8 major=1 | 9 minor=0 | 10 headerLength=32 | 11 chec
 |---|---|
 | **用户** | ✅ 已实测通过。新建/修改 = `PUT /api/settings/users/<id>`，**必须以 GET 到的槽位对象为底再覆盖改动字段**（字段不全 → 500），带 `UserOperation`(0=新增 1=修改)、`confirm_password`、`password_size`、`accessByChannel`、`privilegeByChannel`；删除 = `DELETE /api/settings/users/<id>`，body `{snmp_status,id}`（PUT 清空会 500）。用户是**固定槽位**模型（1=anonymous、2=admin、3..N 空），新建=占用空槽 |
 | **服务** | ❌ 未通过。照抄 BMC UI 的字段集（state/interface_name/两个端口/time_out/maximum_sessions/active_session）PUT，BMC 回 500 `{"error":"Error setting service configuration","code":1198/1199}`；换用 `service_id` 作 URL 同样 500。疑似需要「扩展权限」。UI 已保留但标注未验证，失败不会改动配置 |
-| **日期时间** | ⚠️ 未验证（BMC 当时单请求 15~27 秒）。已按「整体回写」实现 |
+| **日期时间** | ✅ 已实测通过（2026-09-30）。`PUT /api/settings/date-time`，**必须自己算 UTC 偏移并带上**：<br>`{timezone, mode, utc_minutes, timestamp:-1, ntp_auto_date, primary_ntp, secondary_ntp}`<br>· `utc_minutes` = 该时区相对 UTC 的**分钟数**（Asia/Shanghai=480）——BMC 不会从时区名自己算，原版前端是用 moment-timezone 算好后一起提交的<br>· `mode`：时区名含 GMT/UTC 时为 1，否则 0<br>· `timestamp:-1` = 不改时钟（只改时区/NTP）<br>· ⚠️ **NTP 服务器必须填 IP**：这台 BMC **没有可用 DNS**，填 `pool.ntp.org` 这类域名会让整条写入 500 `{"error":"Could not set NTP configuration.","code":1022}`——**连时区也一起写不进去**，这就是"设时区却报 NTP 失败"的原因。实测可用：`203.107.6.88`、`120.25.115.20`（阿里）<br>· `ntp_auto_date`：0=关闭 / 1=已启用 / 2=**服务器无效**（BMC 自报不可达或无法解析），原版 UI 见 2 会弹 "invalid server"<br>· 生效后 BMC 时钟会同步（实测启用后约 1 分钟内对齐北京时间），**SEL 与审计日志的时间戳随之变准** |
 | **网络** | ⚠️ 刻意不做实测（写错会失联，只能到机器前救）。UI 有强警告 + 格式校验 + 二次确认 |
 
 **⚠️ 运维提示**：该 BMC 在 2026-09-29 傍晚起 web 接口稳定变慢（认证请求 5~27 秒，

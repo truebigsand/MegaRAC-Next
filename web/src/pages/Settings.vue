@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
   NAlert,
   NButton,
@@ -259,6 +259,66 @@ async function saveNet() {
 // ---------- 日期时间 ----------
 const dtForm = ref({ timezone: '', ntp_auto_date: 0, primary_ntp: '', secondary_ntp: '' });
 
+/** 常用时区（完整列表来自浏览器内置的 IANA 时区库，这里只保证这几个好找） */
+const TZ_COMMON = [
+  'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Taipei', 'Asia/Tokyo', 'Asia/Singapore',
+  'UTC', 'Europe/London', 'America/Los_Angeles', 'America/New_York',
+];
+
+/**
+ * 某时区当前的 UTC 偏移（分钟，东为正）。
+ * ⚠️ BMC 自己不会从时区名算偏移——原版前端是用 moment-timezone 算好再放进 utc_minutes 的，
+ * 我们必须自己算，否则写入的时区与偏移不一致（实测填充名却没填偏移会失败）。
+ */
+function tzOffsetMinutes(zone: string): number {
+  try {
+    const name =
+      new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' })
+        .formatToParts(new Date())
+        .find((p) => p.type === 'timeZoneName')?.value ?? 'GMT';
+    const m = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(name);
+    if (!m) return 0; // 纯 "GMT"/"UTC"
+    const sign = m[1] === '-' ? -1 : 1;
+    return sign * (Number(m[2]) * 60 + Number(m[3] ?? 0));
+  } catch {
+    return 0;
+  }
+}
+
+const fmtOffset = (min: number) =>
+  `UTC${min >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(min) / 60)).padStart(2, '0')}:${String(Math.abs(min) % 60).padStart(2, '0')}`;
+
+const tzOptions = computed(() => {
+  let all: string[] = [];
+  try {
+    all = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.('timeZone') ?? [];
+  } catch {
+    /* 老浏览器没有这个 API，只用常用列表 */
+  }
+  const set = new Set<string>([...TZ_COMMON, ...all, dtForm.value.timezone].filter(Boolean));
+  return [...set].map((z) => ({ value: z, label: `${z}（${fmtOffset(tzOffsetMinutes(z))}）` }));
+});
+
+/** 实测可用的 NTP 服务器。⚠️ 这台 BMC 解析不了主机名，服务器必须填 IP。 */
+const NTP_PRESETS = [
+  { label: '203.107.6.88（阿里，实测可用）', value: '203.107.6.88' },
+  { label: '120.25.115.20（阿里，实测可用）', value: '120.25.115.20' },
+  { label: '210.72.145.44（国家授时中心）', value: '210.72.145.44' },
+];
+
+/** BMC 自报的 NTP 状态：2 = 服务器无效（不可达或无法解析） */
+const ntpState = computed(() => {
+  const v = datetime.value?.ntp_auto_date;
+  if (v === 1) return { type: 'success' as const, text: '已启用' };
+  if (v === 2) return { type: 'error' as const, text: '服务器无效（不可达或无法解析）' };
+  return { type: 'default' as const, text: '未启用' };
+});
+
+const dtNowText = computed(() => {
+  const t = datetime.value?.timestamp;
+  return t ? new Date(t * 1000).toLocaleString('zh-CN') : '—';
+});
+
 function resetDateTime() {
   dtDirty.value = false;
   const d = datetime.value;
@@ -277,19 +337,52 @@ async function saveDateTime() {
     message.warning('还没取到当前时间设置，请稍后重试');
     return;
   }
-  if (f.ntp_auto_date === 1 && !f.primary_ntp.trim()) {
+  const tz = f.timezone.trim();
+  if (!tz) {
+    message.warning('请选择时区');
+    return;
+  }
+  const primary = f.primary_ntp.trim();
+  const secondary = f.secondary_ntp.trim();
+  if (f.ntp_auto_date === 1 && !primary) {
     message.warning('启用 NTP 时必须填主 NTP 服务器');
     return;
   }
-  // 以 GET 到的对象为底整体回写（BMC 期望模型字段齐全）
-  const ok = await submitWrite('保存时间设置', 'settings/date-time', {
-    ...(dtBase.value ?? {}),
-    timezone: f.timezone.trim(),
+  if (f.ntp_auto_date === 1 && !/^\d{1,3}(\.\d{1,3}){3}$/.test(primary)) {
+    message.warning('NTP 服务器请填 IP 地址：这台 BMC 解析不了主机名（没配 DNS），填域名会被整体拒绝');
+    return;
+  }
+  // 写入体照原版：时区名 + mode（纯 GMT/UTC 偏移为 1）+ utc_minutes（**必须自己算好**）
+  // + timestamp: -1（表示不改时钟，只改时区/NTP）
+  const body = {
+    timezone: tz,
+    mode: /GMT|UTC/i.test(tz) ? 1 : 0,
+    utc_minutes: tzOffsetMinutes(tz),
+    timestamp: -1,
     ntp_auto_date: f.ntp_auto_date,
-    primary_ntp: f.primary_ntp.trim(),
-    secondary_ntp: f.secondary_ntp.trim(),
-  });
-  if (ok) dtDirty.value = false;
+    primary_ntp: primary,
+    secondary_ntp: secondary,
+  };
+  saving.value = true;
+  try {
+    await bmcSend('PUT', 'settings/date-time', body);
+    message.success('保存时间设置成功');
+    dtDirty.value = false;
+    await refresh();
+  } catch (e) {
+    const msg = (e as Error).message ?? '';
+    // BMC 把"NTP 服务器不可达/不能解析"和时区写入打成一个错，这里把真实原因说清楚
+    if (/NTP/i.test(msg)) {
+      message.error(
+        `保存失败：${msg} 原因通常是 NTP 服务器不可达或无法解析——这台 BMC 没有 DNS，服务器必须填 IP（实测 203.107.6.88 可用）。`,
+        { duration: 8000 },
+      );
+    } else {
+      message.error(`保存时间设置失败：${msg}`);
+    }
+  } finally {
+    saving.value = false;
+  }
 }
 
 interface FruDevice {
@@ -350,9 +443,15 @@ const realSessions = ref<Record<string, number> | null>(null);
 const SESSION_TYPE_NAME: Record<number, string> = {
   1: 'web', 2: 'kvm', 3: 'cd-media', 4: 'hd-media', 5: 'kvm', 6: 'ssh',
 };
-const datetime = ref<{ primary_ntp: string; secondary_ntp: string; ntp_auto_date: number; timezone: string } | null>(null);
+const datetime = ref<{
+  primary_ntp: string;
+  secondary_ntp: string;
+  ntp_auto_date: number;
+  timezone: string;
+  timestamp: number;
+  utc_minutes: number;
+} | null>(null);
 /** GET 到的日期时间原始对象（写回时整体带上） */
-const dtBase = ref<Record<string, unknown> | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const userColumns: DataTableColumns<BmcUser> = [
@@ -469,7 +568,7 @@ async function refresh() {
       bmcGet<BmcUser[]>('settings/users'),
       bmcGet<NetIf[]>('settings/network'),
       bmcGet<BmcService[]>('settings/services'),
-      bmcGet<{ primary_ntp: string; secondary_ntp: string; ntp_auto_date: number; timezone: string }>('settings/date-time'),
+      bmcGet<{ primary_ntp: string; secondary_ntp: string; ntp_auto_date: number; timezone: string; timestamp: number; utc_minutes: number }>('settings/date-time'),
     ]);
     // ⚠️ BMC 的 /settings/users 会**按通道各返回一份**（本机实测 32 条 = 16 用户 × 2 通道：
     // channel 1=web/KVM、channel 2=IPMI），两份都渲染会让每个用户在表里出现两次。
@@ -484,7 +583,6 @@ async function refresh() {
     network.value = netData;
     services.value = svcData;
     datetime.value = dtData;
-    dtBase.value = { ...(dtData as unknown as Record<string, unknown>) };
     // 表单只在未编辑时同步，避免把用户正在输入的内容覆盖掉
     if (!dtDirty.value) {
       dtForm.value = {
@@ -566,9 +664,21 @@ onBeforeUnmount(() => {
         </n-tab-pane>
 
         <n-tab-pane name="datetime" :tab="isMobile ? '时间' : '日期时间'">
-          <n-form label-placement="left" :label-width="90" size="small" style="max-width: 520px">
+          <n-form label-placement="left" :label-width="90" size="small" style="max-width: 560px">
+            <n-form-item label="当前时间">
+              <n-space align="center" size="small">
+                <n-tag size="small" :bordered="false">{{ dtNowText }}</n-tag>
+                <n-tag size="small" :type="ntpState.type" :bordered="false">NTP {{ ntpState.text }}</n-tag>
+              </n-space>
+            </n-form-item>
             <n-form-item label="时区">
-              <n-input v-model:value="dtForm.timezone" placeholder="Etc/GMT" @update:value="dtDirty = true" />
+              <n-select
+                v-model:value="dtForm.timezone"
+                :options="tzOptions"
+                filterable
+                placeholder="搜索时区，如 Shanghai"
+                @update:value="dtDirty = true"
+              />
             </n-form-item>
             <n-form-item label="自动 NTP">
               <n-switch
@@ -577,17 +687,23 @@ onBeforeUnmount(() => {
               />
             </n-form-item>
             <n-form-item label="主 NTP">
-              <n-input
+              <n-select
                 v-model:value="dtForm.primary_ntp"
-                placeholder="pool.ntp.org"
+                :options="NTP_PRESETS"
+                filterable
+                tag
+                placeholder="填 IP，如 203.107.6.88"
                 :disabled="dtForm.ntp_auto_date !== 1"
                 @update:value="dtDirty = true"
               />
             </n-form-item>
             <n-form-item label="备 NTP">
-              <n-input
+              <n-select
                 v-model:value="dtForm.secondary_ntp"
-                placeholder="time.nist.gov"
+                :options="NTP_PRESETS"
+                filterable
+                tag
+                placeholder="填 IP（可留空）"
                 :disabled="dtForm.ntp_auto_date !== 1"
                 @update:value="dtDirty = true"
               />
@@ -599,10 +715,13 @@ onBeforeUnmount(() => {
               </n-space>
             </n-form-item>
           </n-form>
+          <n-alert v-if="datetime?.ntp_auto_date === 2" type="warning" size="small" style="margin-top: 8px">
+            BMC 报告「NTP 服务器无效」：它无法解析主机名（本机没配 DNS），请把服务器改成 <b>IP 地址</b>——
+            实测 <code>203.107.6.88</code> 与 <code>120.25.115.20</code> 可用。填域名会让整条写入失败。
+          </n-alert>
           <p class="tip">
-            当前时区 {{ datetime?.timezone ?? '—' }}。BMC 未启用 NTP 时时钟可能不准，日志时间戳会随之偏移。
-            <br />
-            ⚠️ 本机 BMC 当前响应 15~27 秒，此处的保存路径**未实机验证**（用户管理的增删已实测通过）。
+            时区与 NTP 写入已实机验证（含 UTC 偏移量，BMC 自己不会算）。NTP 生效后 BMC 时钟会同步到正确时间，
+            SEL 与审计日志的时间戳随之变准；未启用 NTP 时时钟会一直停在旧时间。
           </p>
         </n-tab-pane>
 
