@@ -757,3 +757,88 @@ PUT  /api/maintenance/hpm/exitupdatemode
 5. 本机（Windows）**入站 TCP 全被拦**（连 3389 这种既有放行规则又在监听的端口从外部也连不上，
    非管理员查不到原因，无第三方安全软件）。所以任何「让 BMC 来拉」的方案都别指望这台机器，
    改把镜像放到 BMC 同网段的其他主机上（本次用的是它自己的 ESXi 主机，走 ESXi 自带 Python + 自定义防火墙规则集）。
+
+---
+
+## 11. Redfish 接口实测与「双数据源」数据层（2026-09-30 重写）
+
+升级到 12.61.39 后 Redfish 升到 1.8（`@odata.type` 从 `Message.v1_0_7` 变 `v1_0_8`，`firmware-info`
+多出 `sku_ver`/`sdr_ver`）。借此机会把新 UI 的数据层重写成「经典 web API 为骨干 + Redfish 为增补」。
+下面全是实测结论，探针脚本：`reverse/redfish_reliability_test.mjs`、`reverse/redfish_abort_test.mjs`、
+`reverse/redfish_401_diagnose.mjs`、`reverse/redfish_keepalive_test.mjs`、`reverse/redfish_ui_mapping.mjs`。
+
+### 三条硬约束（决定了实现方式）
+
+**① 客户端 abort 请求 → BMC 把该 Redfish 会话"毒死"**
+
+对照实验（`redfish_abort_test.mjs`）：
+
+| 步骤 | 结果 |
+|---|---|
+| 正常取 `Managers/Self` | 200（2.1s） |
+| 用 3 秒超时取 `Chassis`（必然 abort） | TimeoutError |
+| **同会话**再取 `Managers/Self` | 挂 30s → 再取 **401** `the service was denied access` |
+| **重新登录**后再取 | 立刻 200（Systems 1.9s / Managers 2.5s） |
+| 给足 120 秒超时取那三个"爱挂"的资源 | **全部 200，只用 0.8~2.1 秒** |
+
+结论：那些"慢"和 401 大多不是 BMC 慢，而是**被客户端 abort 毒死的会话**。反过来说，
+只要不 abort、失败就换会话，Redfish 是可用的。实现见 `server/src/redfish.ts`（超时 90 秒、
+失败即丢 token 重登、绝不主动取消）。
+
+**② 有些资源真的会挂，且一挂就污染后续请求**
+
+- `/redfish/v1/Chassis`：一次实测**挂满 120 秒**（同一时刻经典 API 的 `/api/sensors` 只要 **193ms**，
+  即数据源本身是健康的）→ 这是 Redfish 侧的问题，不是主机/传感器的问题。
+- `/redfish/v1/Systems/Self`、`AccountService/Accounts`、`UpdateService` 也都各挂过一次；
+  但换一轮往往 2 秒就回——**同一个资源时而秒回、时而挂死**。
+- 失败后的下一个请求常直接 401（会话被污染），所以实现里"任何失败都换会话"。
+
+**③ 新固件有防滥用限流：密集请求会封禁整个 IP**
+
+实测：在几秒内连发约 40 次请求（Redfish + 经典 API 混着打）后，**连经典 `POST /api/session` 都返回 403**
+（lighttpd 的 HTML 错误页，不是 JSON），且从别的机器也连不上 BMC 的 443；**约 3 分钟后自愈**。
+实现对策：Redfish 请求**串行 + 最小间隔 250ms + 令牌桶（10 秒 25 次）**，并识别 403+HTML 为封禁、
+退避 200 秒；经典通道本来就已串行化。
+
+### Redfish 相比经典 API 的增量（真正有价值的几项）
+
+| 数据 | 经典 web API | Redfish |
+|---|---|---|
+| BMC 固件版本 | ✅ | ✅ |
+| **BIOS 版本** | ❌（`bios_ver` 为空） | ✅ `Systems/*/BiosVersion`（本机 **R38**） |
+| **序列号 / UUID / 厂商** | 只在 FRU 里，且板卡与产品两条不同 | ✅ `Systems/*` |
+| **CPU 与内存摘要** | ❌ | ✅ `ProcessorSummary` / `Memory`（本机 1×EPYC 7R32） |
+| **健康状态（Status.State/Health）** | ❌ | ✅ |
+| **固件组件清单 + 可更新标记** | ❌ | ✅ `UpdateService/FirmwareInventory`（BMC / BIOS / MB_CPLD1） |
+| **Thermal 标准阈值** | 有 4 档阈值（够用） | ✅ 另有标准名与阈值，作为交叉校验 |
+| 传感器实时值 | ✅ **快（193ms）** | 走 Chassis/Thermal，慢且会挂 |
+| SEL / 用户 / 网络 | ✅ | ✅（结构更标准，但经典够用） |
+| 风扇曲线（技嘉 OEM） | ✅ | ❌ **只有经典 API 有** |
+| KVM（IVTP） | ✅ | ❌ Redfish 不含（OEM 扩展也没暴露可用入口） |
+
+### 因此的数据层设计
+
+```
+页面  →  /api/overview | /api/sensors | /api/sel | /api/inventory   （归一化）
+              ↓
+        server/src/models.ts
+        ├─ 骨干：经典 web API（bmc.ts，单会话池化 + 串行 + 冷却/熔断）
+        └─ 增补：augment.ts 后台预热器 → redfish.ts（只读缓存，绝不阻塞请求）
+```
+
+**关键取舍：请求路径永不等 Redfish。** 直接等它的代价实测过：
+`/api/overview` **101 秒**、`/api/inventory` **97 秒**；改成后台预热 + 读缓存后
+`/api/overview` **2.2 秒**、`/api/inventory` **2.0 秒**、`/api/sensors` **166ms**。
+增补数据（BIOS/序列号/CPU 摘要/固件清单）在登录后约 1~2 分钟由后台补齐，界面用
+"数据来源徽标"如实显示"实时 / 数据可能过时 / 哪些字段降级了"。
+
+### 归一化的两个细节（都是踩过的坑）
+
+1. **健康判定必须以 BMC 的 `sensor_state` 为权威，阈值只用来加重**。
+   本机只有 1 条内存（Group 0）、SYS_FAN5 空、电源是无 PMBus 的 ATX，所以
+   `DIMMG1_TEMP` / `SYS_FAN5` / `PSU*_HOTSPOT` 读数恒为 0，而它们的下限阈值是 0 / 150 / 0 ——
+   纯按阈值判会得到一堆假"严重告警"。BMC 自己对这 31 个模拟量的判断都是 `sensor_state=1`（正常），
+   另外 5 个离散量（`CPU0_Status`/`PS*_Status`/`SEL`/`Watchdog`）是 `sensor_state=0`（不适用）。
+   规则：`状态量→na`；`sensor_state=0→na`；`温度/风扇读数为 0→na（未安装）`；其余按阈值判 warn/crit。
+2. **回退源要能兜住**：`/api/inventory` 的固件清单优先用 Redfish（含"可更新"），
+   拿不到时退回经典 API 的 BMC 版本一项，并在 `sources.degraded` 里说明降级了什么。

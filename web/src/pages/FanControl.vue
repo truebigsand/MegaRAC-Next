@@ -230,7 +230,7 @@ function normalizeConditions(pol: FanPolicy) {
     pol.arrHexVendorID = [];
     pol.arrHexDeviceID = [];
   } else {
-    const picked = pcieDevices.value.filter((d) => pol.arrHexDeviceID.includes(d.hexDeviceID));
+    const picked = pcieDevices.value.filter((d) => (pol.arrHexDeviceID ?? []).includes(d.hexDeviceID));
     pol.arrHexVendorID = picked.map((d) => d.hexVendorID);
     pol.arrHexDeviceID = picked.map((d) => d.hexDeviceID);
   }
@@ -803,7 +803,15 @@ onBeforeUnmount(() => {
 });
 
 const profileOptions = computed(() => profiles.value.map((p) => ({ label: p.strName + (p.strName === mode.value ? '（运行中）' : ''), value: p.strName })));
-const pol = computed(() => editing.value?.arrPolicy[0]);
+/** 模板中直接读写 pol 的字段；给个空档案兜底，避免 vue-tsc 报"可能为 undefined"。
+ *  实际渲染只发生在 editing 存在时，所以这个兜底对象不会被真正写回。 */
+const EMPTY_POLICY: FanPolicy = {
+  iPolicyType: 0, iInSDR: 0, iSensorCode: 0, iInitDuty: 0, iCpuTdp: 0,
+  iAmbientSensor: 0, iAmbientSensorTemp: 0,
+  arrSensor: [], arrFanSensor: [], arrRef: [], arrDuty: [],
+  arrHexVendorID: [], arrHexDeviceID: [], iPCIEDeviceEnable: 0, iHysteresis: 0,
+};
+const pol = computed(() => editing.value?.arrPolicy[0] ?? EMPTY_POLICY);
 </script>
 
 <template>

@@ -1,193 +1,182 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { NCard, NGrid, NGi, NSpace, NStatistic, NTag, NAlert, NSpin } from 'naive-ui';
-import * as echarts from 'echarts';
-import { bmcGet } from '../api';
-import type { ChassisStatus, FirmwareInfo, Sensor, Uptime } from '../types';
-import { useIsMobile } from '../useMediaQuery';
-import { useChartAutoResize } from '../useChartAutoResize';
-import { CHART_COLORS, PREVIEW_PALETTE } from '../chartTheme';
+// 仪表盘（重写版）。
+//
+// 与旧版的区别：
+//   · 只依赖两个**归一化接口**（/api/overview + /api/sensors），不再自己拼 4 个裸接口；
+//   · 顶部有数据来源/新鲜度徽标——BMC 慢的时候用户能看出"这是 30 秒前的数据"而不是以为页面坏了；
+//   · 传感器健康统计、最热几处、各风扇转速都直接来自归一化模型
+//     （含"未安装的传感器读数为 0"这类情况的正确处理，不会误报严重告警）。
+import { computed, reactive, watch } from 'vue';
+import { NAlert, NCard, NGi, NGrid, NList, NListItem, NSpace, NSpin, NStatistic, NTag, NThing } from 'naive-ui';
+import { apiGet } from '../api/client';
+import { useResource } from '../api/useResource';
+import type { Overview, SensorSnapshot } from '../api/models';
+import SourceBadge from '../components/SourceBadge.vue';
+import LiveTrend from '../components/LiveTrend.vue';
 
-const isMobile = useIsMobile();
+const overview = useResource<Overview>('/api/overview', apiGet, { intervalMs: 10_000 });
+const sensors = useResource<SensorSnapshot>('/api/sensors', apiGet, { intervalMs: 10_000 });
 
-const firmware = ref<FirmwareInfo | null>(null);
-const uptime = ref<Uptime | null>(null);
-const powerStatus = ref<number | null>(null);
-const sensors = ref<Sensor[]>([]);
-const loading = ref(true);
-
-// 实时曲线缓冲（客户端内存，最近 120 个采样点）
+// 实时曲线的客户端缓冲（最近 120 点）。
+// CPU0_DTS 是"距临界温度的余量"（越小越热），与真实温度不同源，同图会误导，但单列一条
+// 并注明名字也可以，这里保留它便于观察散热余量。
+const TEMP_KEYS = ['CPU0_TEMP', 'MB_TEMP1', 'MB_TEMP2', 'CPU0_DTS'];
+const FAN_KEYS = ['CPU0_FAN', 'SYS_FAN1', 'SYS_FAN2', 'SYS_FAN3', 'SYS_FAN4'];
 const buf = reactive<{ temps: Map<string, { t: number; v: number }[]>; fans: Map<string, { t: number; v: number }[]> }>({
   temps: new Map(),
   fans: new Map(),
 });
-
-const tempChartEl = ref<HTMLDivElement>();
-const fanChartEl = ref<HTMLDivElement>();
-let tempChart: echarts.ECharts | null = null;
-let fanChart: echarts.ECharts | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
-
-// 温度趋势只画真实温度（°C）；CPU0_DTS 是"距临界温度的余量"（越小越热），
-// 与温度不同源，混在同一张图上会误导读者并拉偏纵轴
-const TEMP_KEYS = ['CPU0_TEMP', 'MB_TEMP1', 'MB_TEMP2'];
-const FAN_KEYS = ['CPU0_FAN', 'SYS_FAN1', 'SYS_FAN2', 'SYS_FAN3', 'SYS_FAN4'];
+const MAX_POINTS = 120;
 
 function push(map: Map<string, { t: number; v: number }[]>, key: string, v: number) {
   if (!map.has(key)) map.set(key, []);
   const arr = map.get(key)!;
   arr.push({ t: Date.now(), v });
-  if (arr.length > 120) arr.shift();
+  if (arr.length > MAX_POINTS) arr.shift();
 }
 
-function lineOption(map: Map<string, { t: number; v: number }[]>, yName: string): echarts.EChartsOption {
-  const series: echarts.SeriesOption[] = [];
-  for (const [key, points] of map) {
-    if (points.length === 0) continue;
-    series.push({
-      name: key,
-      type: 'line',
-      showSymbol: false,
-      smooth: true,
-      data: points.map((p) => [p.t, p.v]),
-    });
-  }
-  // 窄屏：图例缩小换行，并按图例行数动态预留顶部空间（Y 轴单位名也在顶部）
-  const legendRows = Math.min(3, Math.ceil(series.length / 4));
-  return {
-    animation: false,
-    tooltip: { trigger: 'axis' },
-    legend: isMobile.value
-      ? { top: 0, textStyle: { color: CHART_COLORS.legendTextCompact, fontSize: 10 }, itemGap: 6, itemWidth: 12, itemHeight: 8 }
-      : { top: 0, textStyle: { color: CHART_COLORS.legendText, fontSize: 11 } },
-    grid: {
-      left: 44,
-      right: 12,
-      top: isMobile.value ? 20 + legendRows * 18 : 30,
-      bottom: 24,
-    },
-    xAxis: { type: 'time', axisLabel: { color: CHART_COLORS.axisText, hideOverlap: true, fontSize: isMobile.value ? 10 : 12 } },
-    yAxis: {
-      type: 'value',
-      name: yName,
-      nameTextStyle: { color: CHART_COLORS.axisText, fontSize: isMobile.value ? 10 : 12 },
-      axisLabel: { color: CHART_COLORS.axisText, fontSize: isMobile.value ? 10 : 12 },
-      scale: true,
-    },
-    series,
-  };
-}
-
-async function refresh() {
-  try {
-    const [sensorsData, chassis] = await Promise.all([
-      bmcGet<Sensor[]>('sensors'),
-      bmcGet<ChassisStatus>('chassis-status'),
-    ]);
-    sensors.value = sensorsData;
-    powerStatus.value = chassis.power_status;
-    for (const s of sensorsData) {
-      const unit = s.unit.toLowerCase();
-      if (unit === 'deg_c' && TEMP_KEYS.includes(s.name)) push(buf.temps, s.name, s.reading);
-      if (unit === 'rpm' && FAN_KEYS.includes(s.name)) push(buf.fans, s.name, s.reading);
+watch(
+  () => sensors.data.value?.at,
+  () => {
+    const snap = sensors.data.value;
+    if (!snap) return;
+    for (const s of snap.sensors) {
+      if (s.value === null || s.value === 0) continue; // 0 = 未安装/无读数
+      if (TEMP_KEYS.includes(s.name)) push(buf.temps, s.name, s.value);
+      else if (FAN_KEYS.includes(s.name)) push(buf.fans, s.name, s.value);
     }
-    tempChart?.setOption(lineOption(buf.temps, '°C'));
-    fanChart?.setOption(lineOption(buf.fans, 'RPM'));
-  } catch {
-    /* 401 已由 api 层处理 */
-  } finally {
-    loading.value = false;
-  }
-}
+  },
+);
 
-function fmtUptime(u: Uptime | null): string {
-  if (!u) return '—';
-  const hours = (u.minutes_per_count * u.poh_counter_reading) / 60;
-  const days = Math.floor(hours / 24);
-  return `${days} 天 ${Math.round(hours % 24)} 小时`;
-}
+const tempSeries = computed(() => [...buf.temps.entries()].map(([name, points]) => ({ name, points })));
+const fanSeries = computed(() => [...buf.fans.entries()].map(([name, points]) => ({ name, points })));
 
-function sensorValue(name: string): string {
-  const s = sensors.value.find((x) => x.name === name);
-  if (!s) return '—';
-  const unit = s.unit.toLowerCase();
-  return `${s.reading}${unit === 'deg_c' ? '°C' : unit === 'rpm' ? ' RPM' : ''}`;
-}
-
-useChartAutoResize(tempChartEl, () => tempChart);
-useChartAutoResize(fanChartEl, () => fanChart);
-
-onMounted(async () => {
-  tempChart = echarts.init(tempChartEl.value!);
-  fanChart = echarts.init(fanChartEl.value!);
-  try {
-    firmware.value = await bmcGet<FirmwareInfo>('firmware-info');
-    uptime.value = await bmcGet<Uptime>('status/uptime');
-  } catch {
-    /* 忽略，界面显示占位 */
-  }
-  await refresh();
-  timer = setInterval(refresh, 5000);
-});
-
-onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
-  tempChart?.dispose();
-  fanChart?.dispose();
-});
+const ov = computed(() => overview.data.value);
+const healthType = (h: string) => (h.toLowerCase() === 'ok' ? 'success' : h ? 'warning' : 'default');
+const sensorTagType = (k: 'ok' | 'warn' | 'crit' | 'na') =>
+  k === 'ok' ? 'success' : k === 'warn' ? 'warning' : k === 'crit' ? 'error' : 'default';
 </script>
 
-<template>
-  <n-spin :show="loading">
-    <n-space vertical size="large">
-      <n-alert v-if="powerStatus === 1" type="success" :bordered="false">主机已上电</n-alert>
-      <n-alert v-else-if="powerStatus === 0" type="warning" :bordered="false">主机关机 / 未上电</n-alert>
-
-      <n-grid :cols="isMobile ? 1 : 4" :x-gap="12" :y-gap="12">
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="BMC 固件" :value="firmware?.fw_ver ?? '—'" />
-            <template #footer><span class="dim">构建于 {{ firmware?.date ?? '—' }}</span></template>
-          </n-card>
-        </n-gi>
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="开机时长 (POH)" :value="fmtUptime(uptime)" />
-          </n-card>
-        </n-gi>
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="CPU 温度" :value="sensorValue('CPU0_TEMP')" />
-            <template #footer><span class="dim">DTS {{ sensorValue('CPU0_DTS') }}</span></template>
-          </n-card>
-        </n-gi>
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="CPU 风扇" :value="sensorValue('CPU0_FAN')" />
-            <template #footer><span class="dim">主板 {{ sensorValue('MB_TEMP1') }}</span></template>
-          </n-card>
-        </n-gi>
-      </n-grid>
-
-      <n-grid :cols="isMobile ? 1 : 2" :x-gap="12" :y-gap="12">
-        <n-gi>
-          <n-card title="温度趋势" size="small">
-            <div ref="tempChartEl" :style="{ height: isMobile ? '200px' : '240px' }" />
-          </n-card>
-        </n-gi>
-        <n-gi>
-          <n-card title="风扇转速" size="small">
-            <div ref="fanChartEl" :style="{ height: isMobile ? '200px' : '240px' }" />
-          </n-card>
-        </n-gi>
-      </n-grid>
-    </n-space>
-  </n-spin>
-</template>
-
 <style scoped>
-.dim {
-  color: #777;
-  font-size: 12px;
+/* 顶层用普通 flex 容器，避免 Naive Space 对条件子节点自动编号 key 时的重复 key 警告 */
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 </style>
+
+<template>
+  <div class="page-stack">
+    <n-space justify="space-between" align="center">
+      <n-space align="center" size="small">
+        <n-tag key="power" :type="ov?.system.powerState === 'on' ? 'success' : 'default'" :bordered="false" size="small">
+          主机{{ ov?.system.powerState === 'on' ? '在线' : '离线' }}
+        </n-tag>
+        <n-tag v-if="ov?.system.health" key="health" :type="healthType(ov.system.health)" :bordered="false" size="small">
+          健康：{{ ov.system.health }}
+        </n-tag>
+        <n-tag v-if="ov?.fanMode" key="fanmode" size="small" :bordered="false">风扇策略：{{ ov.fanMode }}</n-tag>
+      </n-space>
+      <source-badge
+        :augment="ov?.sources.augment"
+        :stale="overview.stale.value"
+        :age-sec="overview.ageSec.value"
+        :error="overview.error.value"
+        :degraded="ov?.sources.degraded"
+      />
+    </n-space>
+
+    <n-alert v-if="!ov && overview.loading.value" type="info" size="small">
+      <n-spin size="small" /> 正在从 BMC 读取…
+    </n-alert>
+    <n-alert v-else-if="!ov && overview.error.value" type="error" size="small">
+      读取失败：{{ overview.error.value }}
+    </n-alert>
+
+    <n-grid v-if="ov" :x-gap="12" :y-gap="12" cols="1 s:2 m:4" responsive="screen">
+      <n-gi>
+        <n-card size="small" title="BMC 固件">
+          <n-statistic :value="ov.firmware.version || '—'" :label="`构建 ${ov.firmware.buildDate || '—'}`" />
+          <n-space size="small" style="margin-top: 6px">
+            <n-tag key="image" size="tiny" :bordered="false">镜像 {{ ov.firmware.activeImage ?? '—' }}</n-tag>
+            <n-tag v-if="ov.firmware.skuVer" key="sku" size="tiny" :bordered="false">SKU {{ ov.firmware.skuVer }}</n-tag>
+          </n-space>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card size="small" title="主板 / BIOS">
+          <n-statistic :value="ov.system.model || '—'" :label="ov.system.biosVersion ? `BIOS ${ov.system.biosVersion}` : 'BIOS 待补充'" />
+          <n-space size="small" style="margin-top: 6px">
+            <n-tag v-if="ov.system.cpuSummary" size="tiny" :bordered="false">{{ ov.system.cpuSummary }}</n-tag>
+          </n-space>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card size="small" title="传感器">
+          <n-statistic :value="`${ov.sensors.ok} / ${ov.sensors.total}`" label="正常 / 总计" />
+          <n-space size="small" style="margin-top: 6px">
+            <n-tag key="warn" size="tiny" :type="sensorTagType('warn')" :bordered="false">告警 {{ ov.sensors.warn }}</n-tag>
+            <n-tag key="crit" size="tiny" :type="sensorTagType('crit')" :bordered="false">严重 {{ ov.sensors.crit }}</n-tag>
+            <n-tag key="na" size="tiny" :bordered="false">不适用 {{ ov.sensors.na }}</n-tag>
+          </n-space>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card size="small" title="会话 / 运行时长">
+          <n-statistic
+            :value="ov.uptimeHours === null ? '—' : `${Math.floor(ov.uptimeHours / 24)} 天 ${Math.round(ov.uptimeHours % 24)} 小时`"
+            :label="`BMC 会话 ${ov.sessions} 条`"
+          />
+          <n-space v-if="ov.system.serial" size="small" style="margin-top: 6px">
+            <n-tag size="tiny" :bordered="false">SN {{ ov.system.serial }}</n-tag>
+          </n-space>
+        </n-card>
+      </n-gi>
+    </n-grid>
+
+    <n-grid v-if="ov" :x-gap="12" :y-gap="12" cols="1 m:2" responsive="screen">
+      <n-gi>
+        <n-card size="small" title="最热几处">
+          <n-list v-if="ov.hottest.length" hoverable>
+            <n-list-item v-for="h in ov.hottest" :key="h.name">
+              <n-thing :title="h.name">
+                <template #description>
+                  <n-tag size="small" :type="h.value >= 80 ? 'error' : h.value >= 60 ? 'warning' : 'success'" :bordered="false">
+                    {{ h.value }} °C
+                  </n-tag>
+                </template>
+              </n-thing>
+            </n-list-item>
+          </n-list>
+          <n-alert v-else type="default" size="small">暂无温度读数</n-alert>
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card size="small" title="风扇转速">
+          <n-list v-if="ov.fans.length" hoverable>
+            <n-list-item v-for="f in ov.fans" :key="f.name">
+              <n-thing :title="f.name">
+                <template #description>
+                  <n-tag size="small" :bordered="false">{{ f.rpm }} RPM</n-tag>
+                </template>
+              </n-thing>
+            </n-list-item>
+          </n-list>
+          <n-alert v-else type="default" size="small">暂无风扇读数</n-alert>
+        </n-card>
+      </n-gi>
+    </n-grid>
+
+    <n-card size="small" title="温度趋势（最近采样）">
+      <template #header-extra>
+        <n-tag size="tiny" :bordered="false">{{ sensors.data.value?.counts.total ?? 0 }} 个传感器</n-tag>
+      </template>
+      <live-trend :series="tempSeries" y-name="°C" :height="240" />
+    </n-card>
+
+    <n-card size="small" title="风扇趋势（最近采样）">
+      <live-trend :series="fanSeries" y-name="RPM" :height="220" :min="0" />
+    </n-card>
+  </div>
+</template>

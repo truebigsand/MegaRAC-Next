@@ -54,6 +54,11 @@ export interface FanPolicy {
   arrFanSensor: number[];
   arrRef: number[];
   arrDuty: number[];
+  /** 以下字段旧固件不返回、新固件可能返回，故可选（FanControl 里有归一化默认值） */
+  arrHexVendorID?: string[];
+  arrHexDeviceID?: string[];
+  iPCIEDeviceEnable?: number;
+  iHysteresis?: number;
 }
 
 export interface SelEvent {

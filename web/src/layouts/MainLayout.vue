@@ -6,7 +6,7 @@ import { RouterView } from 'vue-router';
 import { auth } from '../store';
 import { logout } from '../api';
 import { useIsMobile } from '../useMediaQuery';
-import { IconDashboard, IconSensors, IconPower, IconFans, IconLogs, IconHistory, IconKvm, IconSettings } from '../icons';
+import { IconDashboard, IconSensors, IconPower, IconFans, IconLogs, IconHistory, IconKvm, IconSettings, IconInventory } from '../icons';
 
 const router = useRouter();
 const route = useRoute();
@@ -22,6 +22,7 @@ const menuOptions = [
   { label: '风扇控制', key: 'fans', icon: IconFans },
   { label: '事件日志', key: 'logs', icon: IconLogs },
   { label: '历史趋势', key: 'history', icon: IconHistory },
+  { label: '系统清单', key: 'inventory', icon: IconInventory },
   { label: 'KVM', key: 'kvm', icon: IconKvm },
   { label: '设置', key: 'settings', icon: IconSettings },
 ];

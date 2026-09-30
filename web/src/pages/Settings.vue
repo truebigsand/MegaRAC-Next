@@ -21,7 +21,7 @@ import {
   useMessage,
 } from 'naive-ui';
 import type { DataTableColumns } from 'naive-ui';
-import { bmcGet } from '../api';
+import { bmcGet, bmcSend } from '../api';
 import { useIsMobile } from '../useMediaQuery';
 
 const isMobile = useIsMobile();
@@ -126,7 +126,7 @@ async function saveUser() {
     message.warning('BMC 要求密码至少 8 位');
     return;
   }
-  const base = userBase.value ?? {};
+  const base = (userBase.value ?? {}) as BmcUser;
   const priv = f.privilege;
   // 字段与取值照抄 BMC 自己的 users 保存逻辑（viewer 的 users_edit_item.save）：
   // UserOperation 0=新增 1=修改；accessByChannel / privilegeByChannel 按通道拼串。

@@ -35,3 +35,11 @@ export const IconHistory = menuIcon(StatsChartOutline);
 export const IconKvm = menuIcon(DesktopOutline);
 /** 设置 */
 export const IconSettings = menuIcon(SettingsOutline);
+
+export const IconInventory = () =>
+  h('svg', { viewBox: '0 0 24 24', width: '1em', height: '1em' }, [
+    h('path', {
+      fill: 'currentColor',
+      d: 'M3 5h18v3H3zM3 10.5h18v3H3zM3 16h18v3H3z',
+    }),
+  ]);

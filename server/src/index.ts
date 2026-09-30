@@ -9,6 +9,9 @@ import {
 import { SqliteHistoryStore } from './history/sqlite.js';
 import { HistorySampler } from './history/sampler.js';
 import { registerKvm, closeAllKvm } from './kvm-route.js';
+import { redfish } from './redfish.js';
+import { buildOverview, buildSensorSnapshot, buildSel, buildInventory } from './models.js';
+import { startAugmenter } from './augment.js';
 
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
@@ -86,6 +89,8 @@ app.post('/api/auth/login', async (req, reply) => {
     app.log.warn(`BMC 登录失败: ${(e as Error).message}`);
     return reply.code(401).send({ error: (e as Error).message });
   }
+  // Redfish 是另一套会话体系，用同一份凭据惰性建会话（只在真正需要增补数据时才建）
+  redfish.configure(username, password);
   const token = randomUUID();
   createSession(token, client);
   reply.setCookie(COOKIE_NAME, token, {
@@ -182,9 +187,49 @@ app.post('/bmc/*', (req, reply) => forwardWrite(req, reply, 'POST'));
 app.put('/bmc/*', (req, reply) => forwardWrite(req, reply, 'PUT'));
 app.delete('/bmc/*', (req, reply) => forwardWrite(req, reply, 'DELETE'));
 
+// ---------- 归一化数据层（新 UI 的主入口） ----------
+//
+// 与 /bmc/* 原始透传的区别：这里返回的是**跨数据源归一化后的模型**
+// （经典 web API 为骨干 + Redfish 增补），并附带来源/降级信息。
+// 设计取舍见 models.ts 顶部说明。
+
+function sessionOf(req: import('fastify').FastifyRequest) {
+  return getSession(req.cookies[COOKIE_NAME]);
+}
+
+app.get('/api/overview', async (req, reply) => {
+  const s = sessionOf(req);
+  if (!s) return reply.code(401).send({ error: 'not_logged_in' });
+  return buildOverview(s.client);
+});
+
+app.get('/api/sensors', async (req, reply) => {
+  const s = sessionOf(req);
+  if (!s) return reply.code(401).send({ error: 'not_logged_in' });
+  return buildSensorSnapshot(s.client);
+});
+
+app.get('/api/sel', async (req, reply) => {
+  const s = sessionOf(req);
+  if (!s) return reply.code(401).send({ error: 'not_logged_in' });
+  const q = req.query as { limit?: string };
+  const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 1000);
+  return buildSel(s.client, limit);
+});
+
+app.get('/api/inventory', async (req, reply) => {
+  const s = sessionOf(req);
+  if (!s) return reply.code(401).send({ error: 'not_logged_in' });
+  return buildInventory(s.client);
+});
+
 // ---------- 健康检查 ----------
 
-app.get('/api/health', async () => ({ ok: true, browserSessions: sessionCount() }));
+app.get('/api/health', async () => ({
+  ok: true,
+  browserSessions: sessionCount(),
+  redfish: redfish.stat(),
+}));
 
 // ---------- BMC 会话维护 ----------
 
@@ -239,6 +284,9 @@ app.post('/api/maintenance/clear-bmc-sessions', async (req, reply) => {
 
 await registerKvm(app);
 
+// Redfish 增补数据的后台预热（不阻塞任何请求路径，见 augment.ts）
+startAugmenter((m) => app.log.info(m));
+
 app.listen({ host: HOST, port: PORT }).then(() => {
   app.log.info(`MegaRAC-Next 代理已启动 http://${HOST}:${PORT}`);
 });
@@ -247,6 +295,8 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     // 退出前主动释放 KVM 主控，否则会在 BMC 侧留下占用会话槽的僵尸
     closeAllKvm();
+    // Redfish 会话也主动注销，别留给 BMC 攒着
+    void redfish.close();
     process.exit(0);
   });
 }
