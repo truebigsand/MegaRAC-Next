@@ -45,6 +45,7 @@ BMC_BASE=https://192.168.0.200 npm start
 | `PORT` | `5177` | 监听端口 |
 | `WEB_DIST` | `web/dist`（相对本进程文件定位） | 前端产物目录；不存在时本进程只提供 API |
 | `COOKIE_SECURE` | 关 | 置 `1` 时会话 cookie 带 `Secure`——**放在 HTTPS 后面时必须打开** |
+| `TRUST_PROXY` | 关 | 置 `1` 时采信 `X-Forwarded-For`/`-Proto`（放在反向代理后面时必须打开，否则 `req.ip` 永远是代理地址，日志与审计里看不到真实客户端）。直接对客户端暴露时**不要**打开：那会让访问者能伪造来源 IP |
 | `HISTORY_DB` | `server/data/history.sqlite3` | 历史趋势库；相对路径按服务端目录解析 |
 | `BMC_TIMEOUT_MS` | `30000` | 经典接口单请求超时 |
 | `BMC_MAX_QUEUED` | `8` | 串行队列上限（防雪崩） |
@@ -116,6 +117,24 @@ docker run -d --name megarac-next -p 5177:5177 \
 
 镜像内置 `HEALTHCHECK`（打 `/api/health`，不依赖 BMC 是否在线）。
 
+**网络模式：默认 host（与本机共享网络栈）**。这份 compose 用 `network_mode: host`——
+端口由 `PORT` 决定、不需要 `ports` 映射，好处是**客户端 IP 不会被 NAT 掉**（日志/审计里是真实地址、
+少一层转发）。代价是容器与宿主不再有网络隔离；若在 Docker Desktop（Windows/macOS）上跑、
+或想让多个实例各占一个端口互不干扰，把它换成 bridge：
+
+```yaml
+    # 删掉 network_mode: host，改为：
+    ports:
+      - "5177:5177"
+```
+
+等价的手工命令：
+
+```bash
+# host 网络（Linux 服务器推荐）
+docker run -d --name megarac-next --restart unless-stopped --network host   -e BMC_BASE=https://192.168.0.200 -e TZ=Asia/Shanghai -e TRUST_PROXY=1   -v megarac-data:/app/server/data megarac-next:latest
+```
+
 **构建时 `npm ci` 卡住不动怎么办**（2026-09-30 实测踩坑）：在 Ubuntu + Docker 29.7 的宿主上，
 `RUN npm ci` 在 **buildkit 默认构建网络**里会一直挂着（进程无 I/O、无 socket，纯空转），
 而**同样的命令在 `docker run` 里 7 秒就装完**。用 host 网络构建即可绕过：
@@ -155,7 +174,7 @@ server {
 }
 ```
 
-同时把进程改成 `HOST=127.0.0.1` 与 `COOKIE_SECURE=1`。
+同时把进程改成 `HOST=127.0.0.1`、`COOKIE_SECURE=1` 与 `TRUST_PROXY=1`（三者配合才既安全又能看到真实客户端 IP）。
 
 ## 6. 安全须知（这个界面能做什么）
 

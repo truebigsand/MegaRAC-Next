@@ -40,8 +40,34 @@ const WEB_DIST = process.env.WEB_DIST || path.resolve(path.dirname(fileURLToPath
 /** 走 HTTPS（例如放在 TLS 反代后面）时置 1，让会话 cookie 带 Secure */
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
 
+/**
+ * 放在反向代理（nginx/openresty/Caddy/Cloudflare 等）后面时置 1，
+ * 让 Fastify 采信 X-Forwarded-For / X-Forwarded-Proto——否则 req.ip 永远是代理地址，
+ * 日志与审计里看不到真实客户端。
+ * 默认关闭：直接对客户端暴露时，采信可伪造的 XFF 只会把日志写脏。
+ */
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+
 const app = Fastify({
-  logger: { level: 'info', transport: undefined },
+  ...(TRUST_PROXY ? { trustProxy: true } : {}),
+  logger: {
+    level: 'info',
+    transport: undefined,
+    // 自定义请求序列化器：默认那个打的是 **socket 地址**，反代后面永远是代理 IP；
+    // 这里额外带上 request.ip（开了 TRUST_PROXY 时会取 X-Forwarded-For）与对端地址，
+    // 两者并排一眼就能看出"真实客户端"与"直连对端（代理）"。
+    serializers: {
+      req(request: import('fastify').FastifyRequest) {
+        return {
+          method: request.method,
+          url: request.url,
+          host: request.headers.host,
+          ip: request.ip,
+          peer: request.socket?.remoteAddress,
+        };
+      },
+    },
+  },
 });
 
 await app.register(cookie);
@@ -354,7 +380,7 @@ if (existsSync(path.join(WEB_DIST, 'index.html'))) {
 startAugmenter((m) => app.log.info(m));
 
 app.listen({ host: HOST, port: PORT }).then(() => {
-  app.log.info(`MegaRAC-Next 代理已启动 http://${HOST}:${PORT}`);
+  app.log.info(`MegaRAC-Next 代理已启动 http://${HOST}:${PORT}${TRUST_PROXY ? '（已信任反代头，req.ip 取 X-Forwarded-For）' : ''}`);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

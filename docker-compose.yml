@@ -16,8 +16,11 @@ services:
     image: megarac-next:latest
     container_name: megarac-next
     restart: unless-stopped
-    ports:
-      - "5177:5177"
+    # 网络模式：默认与宿主共享网络栈（Linux 首选）——客户端 IP 不再被 NAT，
+    # 日志/审计里是真实地址，也少一层转发。端口由下面的 PORT 决定，不用再写 ports。
+    # 若在 Docker Desktop（Win/macOS）上跑，或想让容器与宿主网络隔离，则改用 bridge：
+    #   删掉本行，改为  ports: ["5177:5177"]
+    network_mode: host
     environment:
       # BMC 地址（换成你自己的）
       BMC_BASE: "https://192.168.0.200"
@@ -28,6 +31,8 @@ services:
       TZ: "Asia/Shanghai"
       # 放在 HTTPS 后面时打开，让会话 cookie 带 Secure
       # COOKIE_SECURE: "1"
+      # 放在反向代理后面时打开，req.ip 才会取 X-Forwarded-For（真实客户端 IP）
+      # TRUST_PROXY: "1"
     volumes:
       - megarac-data:/app/server/data
 
