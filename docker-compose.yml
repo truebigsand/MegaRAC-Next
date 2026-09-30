@@ -1,0 +1,28 @@
+# 生产部署示例：docker compose up -d
+#
+# 说明：
+#   · 只暴露 5177 一个端口（进程同时提供 SPA 与 API）
+#   · BMC 凭据不在这里配——由浏览器登录时透传，只驻代理内存
+#   · 历史趋势库挂到命名卷，容器重建不丢
+services:
+  megarac-next:
+    build: .
+    image: megarac-next:latest
+    container_name: megarac-next
+    restart: unless-stopped
+    ports:
+      - "5177:5177"
+    environment:
+      # BMC 地址（换成你自己的）
+      BMC_BASE: "https://192.168.0.200"
+      # 只让内网/VPN 访问；若前面挂了 TLS 反代，把它设为 127.0.0.1 并配上 COOKIE_SECURE=1
+      HOST: "0.0.0.0"
+      PORT: "5177"
+      TZ: "Asia/Shanghai"
+      # 放在 HTTPS 后面时打开，让会话 cookie 带 Secure
+      # COOKIE_SECURE: "1"
+    volumes:
+      - megarac-data:/app/server/data
+
+volumes:
+  megarac-data:

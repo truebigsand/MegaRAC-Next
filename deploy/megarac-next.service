@@ -1,0 +1,45 @@
+[Unit]
+Description=MegaRAC-Next：BMC 管理界面（Fastify 代理 + Vue SPA，单端口）
+Documentation=https://github.com/truebigsand/MegaRAC-Next
+# BMC 在局域网里，等网络就绪再起
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/megarac-next
+ExecStart=/usr/bin/node server/dist/index.js
+
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=5177
+# 换成你的 BMC 地址
+Environment=BMC_BASE=https://192.168.0.200
+# 历史趋势库：放在 systemd 给的 StateDirectory 下（见下）
+Environment=HISTORY_DB=/var/lib/megarac-next/history.sqlite3
+
+# 由 systemd 创建并授权 /var/lib/megarac-next
+StateDirectory=megarac-next
+StateDirectoryMode=0700
+
+User=megarac-next
+Group=megarac-next
+
+# 崩了就拉起来。注意：**不要用频繁重启替代调试**——
+# 每次异常退出都会在 BMC 侧留下孤儿会话（要 30 分钟才超时释放），
+# 攒满 148 格后连登录都会被拒（错误码 15000，救援见 docs/API.md 第 7 节）。
+Restart=on-failure
+RestartSec=5
+
+# 只读挂载 + 禁止提权：这个进程只需要自己那点状态目录
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

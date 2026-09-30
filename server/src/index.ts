@@ -1,6 +1,10 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
+import fastifyStatic from '@fastify/static';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { BmcSessionExpiredError } from './bmc.js';
 import {
   acquireClient, createSession, dropSession, getSession, hasSessionFor,
@@ -16,7 +20,24 @@ import { startAugmenter, kickAugmenter, augment } from './augment.js';
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 5177);
 const COOKIE_NAME = 'mn_token';
-const HISTORY_DB = process.env.HISTORY_DB || 'data/history.sqlite3';
+/**
+ * 历史趋势库。相对路径按**本文件所在目录**解析（源码在 server/src/、产物在 server/dist/，
+ * 都指向 server/data/），这样无论从哪个 cwd 启动、作为服务还是容器运行，落盘位置都一致。
+ */
+const HISTORY_DB = process.env.HISTORY_DB
+  ? path.isAbsolute(process.env.HISTORY_DB)
+    ? process.env.HISTORY_DB
+    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', process.env.HISTORY_DB)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../data/history.sqlite3');
+/**
+ * 前端构建产物目录。存在时由**本进程**直接对外提供 SPA（生产部署：一个进程一个端口），
+ * 不存在时静默跳过（开发时前端由 vite 提供）。
+ * 默认相对本文件定位：源码跑在 server/src/、编译产物跑在 server/dist/，
+ * 两者都指向 <仓库>/web/dist。
+ */
+const WEB_DIST = process.env.WEB_DIST || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
+/** 走 HTTPS（例如放在 TLS 反代后面）时置 1，让会话 cookie 带 Secure */
+const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
 
 const app = Fastify({
   logger: { level: 'info', transport: undefined },
@@ -100,6 +121,7 @@ app.post('/api/auth/login', async (req, reply) => {
     httpOnly: true,
     sameSite: 'strict',
     path: '/',
+    secure: COOKIE_SECURE,
   });
   app.log.info(
     `浏览器会话建立 (BMC racsession_id=${client.sessionId})，浏览器会话数=${sessionCount()}（BMC 侧共享 1 条）`,
@@ -293,6 +315,25 @@ app.post('/api/maintenance/clear-bmc-sessions', async (req, reply) => {
 
 await registerKvm(app);
 
+// ---------- 前端静态资源（生产部署：同一个端口同时提供 SPA 与 API） ----------
+if (existsSync(path.join(WEB_DIST, 'index.html'))) {
+  await app.register(fastifyStatic, { root: WEB_DIST, prefix: '/', wildcard: false });
+  app.log.info(`已挂载前端产物：${WEB_DIST}（浏览器直接访问 http://<host>:${PORT}/ 即可，无需另起前端服务）`);
+  // SPA 回退：只有"导航请求"（GET、要 HTML、且路径不像静态文件）才给 index.html。
+  // 否则缺失的 /assets/xxx.js 会拿到一份 HTML——浏览器按 JS 解析会报语法错，问题很难查。
+  app.setNotFoundHandler((req, reply) => {
+    const pathOnly = req.url.split('?')[0];
+    const looksLikeAsset = /\.[a-z0-9]+$/i.test(pathOnly);
+    const wantsHtml = (req.headers.accept ?? '').includes('text/html');
+    if (req.method === 'GET' && wantsHtml && !looksLikeAsset && !pathOnly.startsWith('/api') && !pathOnly.startsWith('/bmc')) {
+      return reply.type('text/html').sendFile('index.html');
+    }
+    return reply.code(404).send({ error: 'not_found' });
+  });
+} else {
+  app.log.warn(`未找到前端产物（${WEB_DIST}），本进程只提供 API；开发时请另跑 npm run dev:web`);
+}
+
 // Redfish 增补数据的后台预热（不阻塞任何请求路径，见 augment.ts）
 startAugmenter((m) => app.log.info(m));
 
@@ -304,8 +345,9 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     // 退出前主动释放 KVM 主控，否则会在 BMC 侧留下占用会话槽的僵尸
     closeAllKvm();
-    // Redfish 会话也主动注销，别留给 BMC 攒着
+    // Redfish 会话也主动注销，别留给 BMC 攒着（进程重启若不注销会攒成孤儿会话，
+    // 攒满 148 格后连登录都会被拒——见 docs/API.md 第 7 节）
     void redfish.close();
-    process.exit(0);
+    void app.close().finally(() => process.exit(0));
   });
 }

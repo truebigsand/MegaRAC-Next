@@ -99,6 +99,18 @@ npm run dev:web      # 前端，默认 http://0.0.0.0:5173
 | `RF_AUGMENT_INTERVAL_MS` | `90000` | Redfish 增补的后台刷新间隔 |
 | `HISTORY_DB` | `data/history.sqlite3` | 历史趋势库 |
 
+## 生产部署
+
+一个 Node 进程同时提供 SPA 与 API，只开一个端口：
+
+```bash
+npm ci && npm run build
+BMC_BASE=https://192.168.0.200 npm start      # http://<这台机器>:5177/
+```
+
+常驻方式（systemd / Windows 服务 / Docker）、TLS 反代、安全须知与排错见
+[`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
 ## 目录结构
 
 ```
@@ -118,6 +130,7 @@ web/               Vue 3 + Vite 前端
   src/components/    数据来源徽标、实时趋势图
   src/pages/         各页面
   src/kvm/           KVM 客户端与键码表
+deploy/            生产部署产物（systemd unit）
 reverse/           逆向工作区（探针脚本 + 采集样本；AMI 版权产物已 gitignore）
 ```
 

@@ -9,10 +9,14 @@
   "scripts": {
     "dev:server": "npm -w server run dev",
     "dev:web": "npm -w web run dev",
-    "build": "npm -w web run build"
+    "build": "npm -w web run build && npm -w server run build",
+    "start": "npm -w server run start:prod"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
     "esbuild@0.25.12": true
+  },
+  "engines": {
+    "node": ">=24"
   }
 }
