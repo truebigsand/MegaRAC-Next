@@ -175,17 +175,11 @@ const sensorTagType = (k: 'ok' | 'warn' | 'crit' | 'na') =>
     <n-grid :x-gap="12" :y-gap="12" cols="1 l:2" responsive="screen">
       <n-gi>
         <n-card size="small" title="温度趋势（最近采样）">
-          <template #header-extra>
-            <n-tag size="tiny" :bordered="false">{{ sensors.data.value?.counts.total ?? 0 }} 个传感器</n-tag>
-          </template>
           <live-trend :series="tempSeries" y-name="°C" :height="260" />
         </n-card>
       </n-gi>
       <n-gi>
         <n-card size="small" title="风扇趋势（最近采样）">
-          <template #header-extra>
-            <n-tag size="tiny" :bordered="false">DTS（温度余量）见「历史趋势」</n-tag>
-          </template>
           <live-trend :series="fanSeries" y-name="RPM" :height="260" :min="0" />
         </n-card>
       </n-gi>
