@@ -116,10 +116,10 @@ async function refreshFirmware() {
 
 /** 一轮刷新：三块各自独立失败，互不影响 */
 async function tick() {
-  if (!redfish.available) {
-    augment.lastError = '未配置凭据';
-    return;
-  }
+  // 还没人登录时没有凭据可用：静默跳过，不要记成错误。
+  // （启动后 4 秒就会跑第一轮，而登录一定在这之后——之前这里会打出一行
+  //  "错误=未配置凭据"，让人以为是故障。）
+  if (!redfish.available) return;
   const errors: string[] = [];
   // 固件清单变化极慢（除非正在刷写），且它是三个里最慢的（1+每个组件一次请求），
   // 所以只在必要时刷新，避免每一轮都把时间耗在它上面。
@@ -148,8 +148,13 @@ export function startAugmenter(log: (msg: string) => void): void {
     const t0 = Date.now();
     await tick();
     const took = Math.round((Date.now() - t0) / 1000);
+    // 只在第一轮完成或确实出错时打一行，其余保持安静
     if (augment.rounds === 1 || augment.lastError) {
-      log(`Redfish 增补刷新 #${augment.rounds}：用时 ${took}s，系统信息=${augment.system ? '有' : '无'}，Thermal=${augment.thermal.size} 项，固件清单=${augment.firmware.length} 项${augment.lastError ? '，错误=' + augment.lastError : ''}`);
+      log(
+        `Redfish 增补刷新 #${augment.rounds}：用时 ${took}s，系统信息=${augment.system ? '有' : '无'}，` +
+          `Thermal=${augment.thermal.size} 项，固件清单=${augment.firmware.length} 项` +
+          `${augment.lastError ? '，错误=' + augment.lastError : ''}`,
+      );
     }
     setTimeout(loop, INTERVAL_MS);
   };
