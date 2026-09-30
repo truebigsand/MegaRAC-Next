@@ -99,21 +99,21 @@ export class RedfishClient {
     return Date.now() < this.abuseBlockedUntil;
   }
 
+  // 熔断按**精确路径**记：实测 /redfish/v1/Systems 与 /redfish/v1/Systems/Self 一个是好的、
+  // 一个会挂，按父路径归组会把好的那个也一起熔断掉（踩过）。
   private isBroken(path: string): boolean {
-    const t = this.brokenUntil.get(path.replace(/\/[^/]+$/, '/*')) ?? 0;
-    return t > Date.now();
+    return (this.brokenUntil.get(path) ?? 0) > Date.now();
   }
 
   private markFailure(path: string, reason: string) {
     this.failureCount++;
     this.lastReason = reason;
-    const key = path.replace(/\/[^/]+$/, '/*');
-    const n = (this.failures.get(key) ?? 0) + 1;
-    this.failures.set(key, n);
+    const n = (this.failures.get(path) ?? 0) + 1;
+    this.failures.set(path, n);
     if (n >= BREAK_AFTER) {
-      this.brokenUntil.set(key, Date.now() + BREAK_MS);
-      this.failures.set(key, 0);
-      this.lastReason = `${reason}（${key} 已熔断 ${Math.round(BREAK_MS / 1000)}s）`;
+      this.brokenUntil.set(path, Date.now() + BREAK_MS);
+      this.failures.set(path, 0);
+      this.lastReason = `${reason}（${path} 已熔断 ${Math.round(BREAK_MS / 1000)}s）`;
     }
   }
 

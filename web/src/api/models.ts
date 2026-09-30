@@ -72,7 +72,22 @@ export interface SelEntry {
   message: string;
 }
 
+/**
+ * 系统清单（只读）。
+ * 刻意不含账户与网络——那两项在「设置」页可写，重复展示会让人不知道去哪改。
+ */
 export interface Inventory {
+  system: {
+    model: string;
+    serial: string;
+    uuid: string;
+    biosVersion: string;
+    manufacturer: string;
+    cpuSummary: string;
+    memorySummary: string;
+    health: string;
+    powerState: 'on' | 'off';
+  };
   fru: {
     id: number;
     name: string;
@@ -81,15 +96,5 @@ export interface Inventory {
     product: Record<string, string>;
   }[];
   firmware: { name: string; version: string; updateable: boolean | null; source: string }[];
-  accounts: { name: string; privilege: string; enabled: boolean; channel: string }[];
-  network: {
-    interface: string;
-    mac: string;
-    ipv4: string;
-    subnet: string;
-    gateway: string;
-    dhcp: boolean;
-    ipv6: string;
-  } | null;
   sources: { classic: boolean; redfish: boolean; redfishReason: string; augment: AugmentInfo };
 }

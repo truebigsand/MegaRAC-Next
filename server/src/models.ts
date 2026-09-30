@@ -111,11 +111,26 @@ export interface SelEntry {
   message: string;
 }
 
+/**
+ * 系统清单（只读）。
+ *
+ * ⚠️ 刻意**不含**账户与网络：那两项在「设置」页可写，放在这里会与设置页重复
+ * （用户反馈过重复问题）。本页只放"看"的东西：固件组件、系统身份、FRU。
+ */
 export interface Inventory {
+  system: {
+    model: string;
+    serial: string;
+    uuid: string;
+    biosVersion: string;
+    manufacturer: string;
+    cpuSummary: string;
+    memorySummary: string;
+    health: string;
+    powerState: 'on' | 'off';
+  };
   fru: { id: number; name: string; type: string; board: Record<string, string>; product: Record<string, string> }[];
   firmware: { name: string; version: string; updateable: boolean | null; source: string }[];
-  accounts: { name: string; privilege: string; enabled: boolean; channel: string }[];
-  network: { interface: string; mac: string; ipv4: string; subnet: string; gateway: string; dhcp: boolean; ipv6: string } | null;
   sources: { classic: boolean; redfish: boolean; redfishReason: string; augment: AugmentInfo };
 }
 
@@ -241,8 +256,10 @@ export async function buildOverview(client: BmcClient): Promise<Overview> {
       ? (Number(up.poh_counter_reading) * Number(up.minutes_per_count)) / 60
       : null;
 
+  // ⚠️ 排除 DTS：AMD 的 DTS 是"距临界温度的余量"（越小越热），不是温度本身，
+  // 混进"最热几处"会让人误以为 CPU 真有 69°C。
   const hottest = (sens?.sensors ?? [])
-    .filter((s) => s.kind === 'temperature' && s.value !== null)
+    .filter((s) => s.kind === 'temperature' && s.value !== null && !/DTS/i.test(s.name))
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
     .slice(0, 3)
     .map((s) => ({ name: s.name, value: s.value as number }));
@@ -308,10 +325,9 @@ export async function buildSel(client: BmcClient, limit = 100): Promise<{ entrie
 }
 
 export async function buildInventory(client: BmcClient): Promise<Inventory> {
-  const [fruRes, accRes, netRes] = await Promise.all([
+  const [fruRes, chRes] = await Promise.all([
     client.get('/api/settings/fru', true).catch(() => ({ body: null }) as { body: unknown }),
-    client.get('/api/settings/users', true).catch(() => ({ body: null }) as { body: unknown }),
-    client.get('/api/settings/network', true).catch(() => ({ body: null }) as { body: unknown }),
+    client.get('/api/chassis-status', true).catch(() => ({ body: null }) as { body: unknown }),
   ]);
 
   const fru = ((Array.isArray(fruRes.body) ? fruRes.body : []) as Record<string, unknown>[]).map((f) => {
@@ -337,29 +353,6 @@ export async function buildInventory(client: BmcClient): Promise<Inventory> {
     };
   });
 
-  const accounts = ((Array.isArray(accRes.body) ? accRes.body : []) as Record<string, unknown>[])
-    .filter((u) => Number(u.fixed_user_count) === 1 || String(u.name ?? '').length > 0)
-    .slice(0, 32)
-    .map((u) => ({
-      name: String(u.name ?? ''),
-      privilege: String(u.privilege ?? ''),
-      enabled: Number(u.access) === 1,
-      channel: String(u.accessByChannel ?? ''),
-    }));
-
-  const netRaw = ((Array.isArray(netRes.body) ? netRes.body : []) as Record<string, unknown>[])[0];
-  const network = netRaw
-    ? {
-        interface: String(netRaw.interface_name ?? ''),
-        mac: String(netRaw.mac_address ?? ''),
-        ipv4: String(netRaw.ipv4_address ?? ''),
-        subnet: String(netRaw.ipv4_subnet ?? ''),
-        gateway: String(netRaw.ipv4_gateway ?? ''),
-        dhcp: Number(netRaw.ipv4_dhcp_enable) === 1,
-        ipv6: String(netRaw.ipv6_address ?? ''),
-      }
-    : null;
-
   // 固件清单：优先用后台预热到的 Redfish 数据（BIOS/CPLD 版本只有它有），否则退回经典
   const firmware: Inventory['firmware'] = augment.firmware.length ? [...augment.firmware] : [];
   if (firmware.length === 0) {
@@ -368,11 +361,29 @@ export async function buildInventory(client: BmcClient): Promise<Inventory> {
     firmware.push({ name: 'BMC', version: String(f.fw_ver ?? ''), updateable: null, source: 'classic' });
   }
 
+  // 系统身份摘要：Redfish 优先（BIOS/序列号/UUID/CPU/内存/健康只有它有），经典 API 兜底
+  const rf = augment.system;
+  const mem = (rf?.Memory ?? null) as Record<string, unknown> | null;
+  const proc = (rf?.ProcessorSummary ?? null) as Record<string, unknown> | null;
+  const st = (rf?.Status ?? null) as Record<string, unknown> | null;
+  const mainFru = fru.find((f) => f.board.serial || f.product.serial);
+  const ch = (chRes.body ?? {}) as Record<string, unknown>;
+  const system: Inventory['system'] = {
+    model: String(rf?.Model ?? mainFru?.board.product ?? ''),
+    serial: String(rf?.SerialNumber ?? mainFru?.board.serial ?? mainFru?.product.serial ?? ''),
+    uuid: String(rf?.UUID ?? ''),
+    biosVersion: String(rf?.BiosVersion ?? ''),
+    manufacturer: String(rf?.Manufacturer ?? mainFru?.board.manufacturer ?? ''),
+    cpuSummary: proc ? `${proc.Count ?? '?'} × ${proc.Model ?? '?'}` : '',
+    memorySummary: mem?.TotalSystemMemoryGiB ? `${mem.TotalSystemMemoryGiB} GiB` : '',
+    health: String(st?.Health ?? ''),
+    powerState: Number(ch.power_status) === 1 ? 'on' : 'off',
+  };
+
   return {
+    system,
     fru,
     firmware,
-    accounts,
-    network,
-    sources: { classic: true, redfish: firmware.some((f) => f.source === 'redfish'), redfishReason: reasonText(redfish.stat().reason), augment: augmentInfo(firmware.some((f) => f.source === 'redfish')) },
+    sources: { classic: true, redfish: firmware.some((f) => f.source === 'redfish') || !!rf, redfishReason: reasonText(redfish.stat().reason), augment: augmentInfo(!!rf) },
   };
 }

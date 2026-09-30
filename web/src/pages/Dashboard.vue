@@ -18,9 +18,9 @@ const overview = useResource<Overview>('/api/overview', apiGet, { intervalMs: 10
 const sensors = useResource<SensorSnapshot>('/api/sensors', apiGet, { intervalMs: 10_000 });
 
 // 实时曲线的客户端缓冲（最近 120 点）。
-// CPU0_DTS 是"距临界温度的余量"（越小越热），与真实温度不同源，同图会误导，但单列一条
-// 并注明名字也可以，这里保留它便于观察散热余量。
-const TEMP_KEYS = ['CPU0_TEMP', 'MB_TEMP1', 'MB_TEMP2', 'CPU0_DTS'];
+// ⚠️ 不含 CPU0_DTS：它是 AMD 的"距临界温度余量"（越小越热），不是温度本身，
+// 混在温度图/最热榜里会让人把 69 当成 CPU 的真实温度。要看余量请去「历史趋势」页选它。
+const TEMP_KEYS = ['CPU0_TEMP', 'MB_TEMP1', 'MB_TEMP2'];
 const FAN_KEYS = ['CPU0_FAN', 'SYS_FAN1', 'SYS_FAN2', 'SYS_FAN3', 'SYS_FAN4'];
 const buf = reactive<{ temps: Map<string, { t: number; v: number }[]>; fans: Map<string, { t: number; v: number }[]> }>({
   temps: new Map(),
@@ -58,11 +58,14 @@ const sensorTagType = (k: 'ok' | 'warn' | 'crit' | 'na') =>
 </script>
 
 <style scoped>
-/* 顶层用普通 flex 容器，避免 Naive Space 对条件子节点自动编号 key 时的重复 key 警告 */
+/* 顶层用普通 flex 容器，避免 Naive Space 对条件子节点自动编号 key 时的重复 key 警告；
+   同时把内容收在中线——超宽屏下统计卡与图表拉满 2560px 会很难读 */
 .page-stack {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  max-width: 1720px;
+  margin: 0 auto;
 }
 </style>
 
@@ -168,15 +171,24 @@ const sensorTagType = (k: 'ok' | 'warn' | 'crit' | 'na') =>
       </n-gi>
     </n-grid>
 
-    <n-card size="small" title="温度趋势（最近采样）">
-      <template #header-extra>
-        <n-tag size="tiny" :bordered="false">{{ sensors.data.value?.counts.total ?? 0 }} 个传感器</n-tag>
-      </template>
-      <live-trend :series="tempSeries" y-name="°C" :height="240" />
-    </n-card>
-
-    <n-card size="small" title="风扇趋势（最近采样）">
-      <live-trend :series="fanSeries" y-name="RPM" :height="220" :min="0" />
-    </n-card>
+    <!-- 宽屏（≥1280px）两张趋势图并排：单张拉满整行时又扁又长，读起来很差 -->
+    <n-grid :x-gap="12" :y-gap="12" cols="1 l:2" responsive="screen">
+      <n-gi>
+        <n-card size="small" title="温度趋势（最近采样）">
+          <template #header-extra>
+            <n-tag size="tiny" :bordered="false">{{ sensors.data.value?.counts.total ?? 0 }} 个传感器</n-tag>
+          </template>
+          <live-trend :series="tempSeries" y-name="°C" :height="260" />
+        </n-card>
+      </n-gi>
+      <n-gi>
+        <n-card size="small" title="风扇趋势（最近采样）">
+          <template #header-extra>
+            <n-tag size="tiny" :bordered="false">DTS（温度余量）见「历史趋势」</n-tag>
+          </template>
+          <live-trend :series="fanSeries" y-name="RPM" :height="260" :min="0" />
+        </n-card>
+      </n-gi>
+    </n-grid>
   </div>
 </template>

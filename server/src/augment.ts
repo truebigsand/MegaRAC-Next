@@ -81,10 +81,16 @@ async function refreshThermal() {
 }
 
 async function refreshSystem() {
-  const coll = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/Systems', 300_000);
-  const first = coll.Members?.[0]?.['@odata.id'];
-  if (!first) return;
-  const sys = await redfish.get<Record<string, unknown>>(first, 180_000);
+  // 两条路都试：集合（标准做法）→ 集合里给出的成员；实测这台 BMC 的成员恒为 /Systems/Self，
+  // 而集合本身偶发超时，所以集合失败时直接打成员路径（实测该路径稳定 200/2s）。
+  let target = '/redfish/v1/Systems/Self';
+  try {
+    const coll = await redfish.get<{ Members?: { '@odata.id': string }[] }>('/redfish/v1/Systems', 300_000);
+    target = coll.Members?.[0]?.['@odata.id'] ?? target;
+  } catch {
+    /* 集合拿不到就用已知成员路径 */
+  }
+  const sys = await redfish.get<Record<string, unknown>>(target, 180_000);
   augment.system = sys;
 }
 

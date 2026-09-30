@@ -301,6 +301,7 @@ interface FruDevice {
 interface BmcUser {
   id: number;
   userid: number;
+  channel: number;
   name: string;
   access: number;
   privilege: string;
@@ -336,7 +337,6 @@ interface BmcService {
   active_session: number;
 }
 
-const fru = ref<FruDevice[]>([]);
 const users = ref<BmcUser[]>([]);
 const network = ref<NetIf[]>([]);
 const services = ref<BmcService[]>([]);
@@ -465,15 +465,22 @@ async function loadRealSessions() {
 async function refresh() {
   void loadRealSessions(); // 会话真实条数单独取，取不到不影响其它页签
   try {
-    const [fruData, usersData, netData, svcData, dtData] = await Promise.all([
-      bmcGet<FruDevice[]>('fru'),
+    const [usersData, netData, svcData, dtData] = await Promise.all([
       bmcGet<BmcUser[]>('settings/users'),
       bmcGet<NetIf[]>('settings/network'),
       bmcGet<BmcService[]>('settings/services'),
       bmcGet<{ primary_ntp: string; secondary_ntp: string; ntp_auto_date: number; timezone: string }>('settings/date-time'),
     ]);
-    fru.value = fruData;
-    users.value = usersData.filter((u) => u.privilege !== undefined);
+    // ⚠️ BMC 的 /settings/users 会**按通道各返回一份**（本机实测 32 条 = 16 用户 × 2 通道：
+    // channel 1=web/KVM、channel 2=IPMI），两份都渲染会让每个用户在表里出现两次。
+    // 这里按 userid 归并、取通道号最小的那份（即本页可编辑的 web/KVM 通道）。
+    const byUser = new Map<number, BmcUser>();
+    for (const u of usersData) {
+      if (u.privilege === undefined) continue;
+      const cur = byUser.get(u.userid);
+      if (!cur || u.channel < cur.channel) byUser.set(u.userid, u);
+    }
+    users.value = [...byUser.values()].sort((a, b) => a.userid - b.userid);
     network.value = netData;
     services.value = svcData;
     datetime.value = dtData;
@@ -505,28 +512,17 @@ onBeforeUnmount(() => {
 
 <template>
   <n-space vertical size="large">
+    <n-alert type="default" size="small">
+      本页只放**可写**的配置（用户 / 网络 / 日期时间 / 服务）。只读的系统信息——固件组件、型号与序列号、BIOS、FRU——在「系统清单」页。
+    </n-alert>
+
     <n-card title="设置" size="small">
       <n-tabs type="line" animated :tabs-padding="isMobile ? 10 : 16">
-        <n-tab-pane name="fru" :tab="isMobile ? 'FRU' : 'FRU 信息'">
-          <n-descriptions
-            v-for="d in fru"
-            :key="d.device.id"
-            :title="d.device.name"
-            bordered
-            :column="isMobile ? 1 : 2"
-            size="small"
-            style="margin-bottom: 16px"
-          >
-            <n-descriptions-item label="机箱类型">{{ d.chassis?.type ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="机箱序列号">{{ d.chassis?.serial_number ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="板卡产品">{{ d.board?.product_name ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="板卡序列号">{{ d.board?.serial_number ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="产品名称">{{ d.product?.product_name ?? '—' }}</n-descriptions-item>
-            <n-descriptions-item label="资产标签">{{ d.product?.asset_tag ?? '—' }}</n-descriptions-item>
-          </n-descriptions>
-        </n-tab-pane>
-
         <n-tab-pane name="users" :tab="isMobile ? '用户' : '用户管理'">
+          <n-alert type="default" size="small" style="margin-bottom: 8px">
+            下表是 **web / KVM 通道**的账号（BMC 另有一套 IPMI 通道的权限，不在本页展示）。
+            ID 是固定槽位：1=anonymous、2=admin，其余为空槽，新建即占用空槽。
+          </n-alert>
           <n-space vertical size="small">
             <div>
               <n-button size="small" type="primary" @click="openUserCreate">新建用户</n-button>
