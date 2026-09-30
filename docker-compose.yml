@@ -6,7 +6,13 @@
 #   · 历史趋势库挂到命名卷，容器重建不丢
 services:
   megarac-next:
-    build: .
+    build:
+      context: .
+      # 国内网络可用镜像加速（默认值面向公网）：
+      #   NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine NPM_REGISTRY=https://registry.npmmirror.com docker compose up -d --build
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     image: megarac-next:latest
     container_name: megarac-next
     restart: unless-stopped

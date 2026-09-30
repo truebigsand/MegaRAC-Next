@@ -96,7 +96,8 @@ onMounted(async () => {
 
         <n-divider style="margin: 14px 0 10px" />
 
-        <n-button block quaternary size="small" :loading="resetting" @click="onReset">重置 BMC</n-button>
+        <!-- 用外框线样式（不带填充）：这是个救援操作，视觉上不该抢登录按钮的注意力 -->
+        <n-button block size="small" :bordered="true" :loading="resetting" @click="onReset">重置 BMC</n-button>
         <n-text depth="3" style="display: block; margin-top: 6px; font-size: 12px; line-height: 1.6">
           登录不上时用（例如提示「BMC 的 web 会话表已满」）：用上面这组账密向 BMC 认证后重启它的管理控制器，约 2.5 分钟恢复，主机与虚拟机不受影响。
         </n-text>

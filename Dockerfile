@@ -7,21 +7,29 @@
 # 运行：docker run -d -p 5177:5177 -e BMC_BASE=https://192.168.0.200 -v megarac-data:/app/server/data megarac-next
 # （或直接用仓库根的 docker-compose.yml）
 
+# 国内网络往往拉不到 Docker Hub / npm 官方源，这里留两个构建参数（默认值对公网用户不变）：
+#   docker build \
+#     --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine \
+#     --build-arg NPM_REGISTRY=https://registry.npmmirror.com .
+ARG NODE_IMAGE=node:24-alpine
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 # ---------- 构建阶段 ----------
-FROM node:24-alpine AS build
+FROM ${NODE_IMAGE} AS build
+ARG NPM_REGISTRY
 WORKDIR /app
 # 先只复制清单，让依赖层能被缓存
 COPY package.json package-lock.json ./
 COPY server/package.json server/
 COPY web/package.json web/
-RUN npm ci
+RUN npm ci --registry="$NPM_REGISTRY"
 COPY . .
 RUN npm run build
 # 去掉开发依赖（vite / tsx / typescript 等），运行阶段直接复用这份 node_modules
 RUN npm prune --omit=dev
 
 # ---------- 运行阶段 ----------
-FROM node:24-alpine
+FROM ${NODE_IMAGE}
 WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \

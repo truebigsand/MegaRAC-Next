@@ -103,6 +103,9 @@ schtasks /create /tn MegaRACNext /sc onstart /ru SYSTEM /tr "\"C:\Program Files\
 
 ```bash
 docker compose up -d          # 用仓库根的 docker-compose.yml
+
+# 国内网络：Docker Hub 与 npm 官方源通常不可达，改用镜像（已验证可达：daocloud / npmmirror）
+NODE_IMAGE=docker.m.daocloud.io/library/node:24-alpine NPM_REGISTRY=https://registry.npmmirror.com docker compose up -d --build
 # 或手工：
 docker build -t megarac-next .
 docker run -d --name megarac-next -p 5177:5177 \
@@ -112,6 +115,16 @@ docker run -d --name megarac-next -p 5177:5177 \
 ```
 
 镜像内置 `HEALTHCHECK`（打 `/api/health`，不依赖 BMC 是否在线）。
+
+**构建时 `npm ci` 卡住不动怎么办**（2026-09-30 实测踩坑）：在 Ubuntu + Docker 29.7 的宿主上，
+`RUN npm ci` 在 **buildkit 默认构建网络**里会一直挂着（进程无 I/O、无 socket，纯空转），
+而**同样的命令在 `docker run` 里 7 秒就装完**。用 host 网络构建即可绕过：
+
+```bash
+docker build --network=host -t megarac-next .          # 命令行
+# compose：在 build: 下加一行 network: host，再 docker compose up -d --build
+```
+这是宿主 Docker 构建网络的问题，与本项目无关。
 
 ## 5. 放在 TLS 反代后面（推荐）
 
