@@ -19,7 +19,7 @@ MegaRAC-Next 是**一个 Node 进程**：既提供 Vue 构建产物（SPA），�
 |---|---|---|
 | Node | **≥ 24**（或 Docker） | 历史趋势用内置 `node:sqlite`，Node 23.4 之前需要 `--experimental-sqlite` |
 | 网络 | 能访问 BMC 的 443 | 代理与 BMC 之间必须直连（BMC 不经过任何外部服务） |
-| 系统 | Linux / Windows / macOS 均可 | 官方只在 Windows 上长期实测过 |
+| 系统 | Linux / Windows / macOS 均可 | Windows 上验证最充分 |
 
 ## 2. 最快路径（裸机 / 直接跑进程）
 
@@ -100,9 +100,9 @@ schtasks /create /tn MegaRACNext /sc onstart /ru SYSTEM /tr "\"C:\Program Files\
 
 ### 容器
 
-> ⚠️ **验证状态**：本机与手边可用的机器都没有 Docker，所以**镜像构建本身未实测**。
-> 但它调的每一步（`npm ci`、`npm run build`、`node server/dist/index.js`、静态资源与 SPA 回退、
-> `/api/health`）都在裸机路径上实测过，Dockerfile 只是把这些包进容器。首次使用请留意构建日志。
+> ⚠️ **验证状态**：**镜像构建未在开发环境执行过**（开发环境无 Docker）。
+> 但它调用的每一步（`npm ci`、`npm run build`、`node server/dist/index.js`、静态资源与 SPA 回退、
+> `/api/health`）都已在裸机路径验证，Dockerfile 只是把这些包进容器。首次使用请留意构建日志。
 
 ```bash
 docker compose up -d          # 用仓库根的 docker-compose.yml
@@ -137,7 +137,7 @@ docker run -d --name megarac-next -p 5177:5177 \
 docker run -d --name megarac-next --restart unless-stopped --network host   -e BMC_BASE=https://192.168.0.200 -e TZ=Asia/Shanghai -e TRUST_PROXY=1   -v megarac-data:/app/server/data megarac-next:latest
 ```
 
-**构建时 `npm ci` 卡住不动怎么办**（2026-09-30 实测踩坑）：在 Ubuntu + Docker 29.7 的宿主上，
+**构建时 `npm ci` 卡住不动怎么办**（实测）：在 Ubuntu + Docker 29.7 的宿主上，
 `RUN npm ci` 在 **buildkit 默认构建网络**里会一直挂着（进程无 I/O、无 socket，纯空转），
 而**同样的命令在 `docker run` 里 7 秒就装完**。用 host 网络构建即可绕过：
 
@@ -196,8 +196,8 @@ server {
 
 1. **登录页的「重置 BMC」按钮（首选，无需登录）**：填上 BMC 账号密码 → 点它 → 确认后代理会用这组凭据
    向 BMC 的 **Redfish** 认证并调用 `Manager.Reset{ResetType:ForceRestart}`。
-   之所以走 Redfish：会话表满时经典接口全线被拒，而 Redfish 仍能建会话（2026-09-30 实测），
-   所以这是唯一还能自救的通道。实测：19 秒下线、145 秒恢复，配置（时区/NTP 等）保留。
+   之所以走 Redfish：会话表满时经典接口全线被拒，而 Redfish 仍能建会话，所以这是唯一还能自救的通道。
+   实测：约 20 秒下线、145 秒恢复，配置（时区/NTP 等）保留。
 2. IPMI 冷复位（UI 完全起不来时用）：
 
 ```bash
@@ -209,7 +209,7 @@ python reverse/ipmi_reset_bmc.py      # 需要 pyghmi 与 BMC_PASS；约 2.5 分
 | 现象 | 原因与处理 |
 |---|---|
 | 界面显示「数据可能过时」 | BMC 慢/短暂不可达，代理保留上一份好数据并自动重试；通常几十秒自愈 |
-| 「Redfish 增补：… 暂不可用」 | 这台 BMC 的 Redfish 偶发挂起（`Chassis/Thermal` 尤甚），代理按资源熔断并后台重试，主干数据不受影响 |
+| 「Redfish 增补：… 暂不可用」 | BMC 的 Redfish 偶发挂起（`Chassis/Thermal` 尤甚），代理按资源熔断并后台重试，主干数据不受影响 |
 | 登录报「BMC 的 web 会话表已满」 | 见上，冷复位 |
 | KVM 连上但键鼠无效 | 说明本会话是从属（BMC 侧还有主控），代理会自动申请完全控制；若旧会话没释放，等它超时 |
 | 历史趋势空 | 采样器借用登录会话，**需要至少有一个浏览器登录着**才会采样 |

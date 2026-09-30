@@ -105,8 +105,8 @@ const firmwareHint = computed(() => {
         <n-card size="small" title="固件组件">
           <n-data-table :columns="fwColumns" :data="data?.firmware ?? []" size="small" :row-key="fwRowKey" />
           <n-alert type="warning" size="small" style="margin-top: 10px">
-            刷写固件请用带外流程（本机实测网页面板与 Redfish SimpleUpdate 都走不通，可用的是让 BMC 从 TFTP 拉取）：
-            详见仓库 <code>docs/API.md</code> 第 10 节与 <code>reverse/flash_via_tftp_full.mjs</code>。
+            固件刷写请走带外流程（网页面板与 Redfish SimpleUpdate 在该固件上不可用；可用的是让 BMC 从 TFTP 拉取镜像），
+            详见仓库 <code>docs/API.md</code> 第 10 节。
           </n-alert>
         </n-card>
       </n-gi>

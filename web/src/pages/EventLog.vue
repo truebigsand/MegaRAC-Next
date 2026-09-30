@@ -86,7 +86,7 @@ const columns: DataTableColumns<SelEntry> = [
 
     <n-alert v-if="sel.error.value && !sel.data.value" type="error" size="small">读取失败：{{ sel.error.value }}</n-alert>
     <n-alert v-else key="hint" type="info" size="small">
-      BMC 时间未同步 NTP 时，日志时间戳会不准（这台 BMC 的时钟停在 2012/2024），判断先后请以记录序号为准。
+      BMC 未同步 NTP 时，日志时间戳会不准——判断先后请以记录序号为准。
     </n-alert>
 
     <n-card size="small">

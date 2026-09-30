@@ -299,10 +299,10 @@ const tzOptions = computed(() => {
   return [...set].map((z) => ({ value: z, label: `${z}（${fmtOffset(tzOffsetMinutes(z))}）` }));
 });
 
-/** 实测可用的 NTP 服务器。⚠️ 这台 BMC 解析不了主机名，服务器必须填 IP。 */
+/** 常用公共 NTP 服务器。⚠️ 只能用 IP：BMC 若无法解析域名（未配 DNS），整条写入会被拒。 */
 const NTP_PRESETS = [
-  { label: '203.107.6.88（阿里，实测可用）', value: '203.107.6.88' },
-  { label: '120.25.115.20（阿里，实测可用）', value: '120.25.115.20' },
+  { label: '203.107.6.88（阿里公共 NTP）', value: '203.107.6.88' },
+  { label: '120.25.115.20（阿里公共 NTP）', value: '120.25.115.20' },
   { label: '210.72.145.44（国家授时中心）', value: '210.72.145.44' },
 ];
 
@@ -349,7 +349,7 @@ async function saveDateTime() {
     return;
   }
   if (f.ntp_auto_date === 1 && !/^\d{1,3}(\.\d{1,3}){3}$/.test(primary)) {
-    message.warning('NTP 服务器请填 IP 地址：这台 BMC 解析不了主机名（没配 DNS），填域名会被整体拒绝');
+    message.warning('NTP 服务器请填 IP 地址：BMC 无法解析域名时（未配 DNS），填域名会导致整条写入被拒');
     return;
   }
   // 写入体照原版：时区名 + mode（纯 GMT/UTC 偏移为 1）+ utc_minutes（**必须自己算好**）
@@ -374,7 +374,7 @@ async function saveDateTime() {
     // BMC 把"NTP 服务器不可达/不能解析"和时区写入打成一个错，这里把真实原因说清楚
     if (/NTP/i.test(msg)) {
       message.error(
-        `保存失败：${msg} 原因通常是 NTP 服务器不可达或无法解析——这台 BMC 没有 DNS，服务器必须填 IP（实测 203.107.6.88 可用）。`,
+        `保存失败：${msg} 常见原因是 NTP 服务器不可达或无法解析——若 BMC 没有可用的 DNS，请把服务器改成 IP 地址。`,
         { duration: 8000 },
       );
     } else {
@@ -716,12 +716,12 @@ onBeforeUnmount(() => {
             </n-form-item>
           </n-form>
           <n-alert v-if="datetime?.ntp_auto_date === 2" type="warning" size="small" style="margin-top: 8px">
-            BMC 报告「NTP 服务器无效」：它无法解析主机名（本机没配 DNS），请把服务器改成 <b>IP 地址</b>——
-            实测 <code>203.107.6.88</code> 与 <code>120.25.115.20</code> 可用。填域名会让整条写入失败。
+            BMC 报告「NTP 服务器无效」：可能是服务器不可达、或 BMC 无法解析该域名。
+            请改用 <b>IP 地址</b>（上方预设可直接选）——填域名可能会让整条写入被拒。
           </n-alert>
           <p class="tip">
-            时区与 NTP 写入已实机验证（含 UTC 偏移量，BMC 自己不会算）。NTP 生效后 BMC 时钟会同步到正确时间，
-            SEL 与审计日志的时间戳随之变准；未启用 NTP 时时钟会一直停在旧时间。
+            时区提交时会一并算好 UTC 偏移量（BMC 不会自己从时区名推导）。NTP 生效后 BMC 时钟会同步到正确时间，
+            SEL 与审计日志的时间戳随之变准；未启用 NTP 时时钟会停在旧时间。
           </p>
         </n-tab-pane>
 
@@ -737,8 +737,8 @@ onBeforeUnmount(() => {
             <n-data-table :loading="tableLoading" :columns="serviceColumns" :data="services" size="small" :bordered="false" :scroll-x="isMobile ? 520 : undefined" />
           </n-space>
           <p class="tip">
-            「会话 当前」取的是 BMC 真实会话列表的条数。BMC 自身 API 里的
-            <code>active_session</code> 计数器实测是错的（重置后仍显示接近上限），故不使用。
+            「会话 当前」取的是 BMC 会话列表的真实条数——其自身 API 里的
+            <code>active_session</code> 计数器不可靠，故不使用。
           </p>
         </n-tab-pane>
       </n-tabs>
@@ -811,8 +811,8 @@ onBeforeUnmount(() => {
           改动 web 服务的端口/超时需要重连 BMC；会话上限调得太小会把自己拒之门外。
         </n-alert>
         <n-alert type="warning" size="small" style="margin-top: 8px">
-          ⚠️ 实机未验证：本机 BMC 对服务配置写入返回 500（错误码 1198/1199），
-          疑似需要「扩展权限」或更完整的字段集。保存失败时 BMC 配置不会改变。
+          注意：该固件会拒绝服务配置写入（返回 500，错误码 1198/1199），此项可能保存失败；
+          失败时 BMC 配置不会改变。
         </n-alert>
         <template #footer>
           <n-space justify="end">
