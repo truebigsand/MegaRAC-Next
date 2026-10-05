@@ -1,6 +1,6 @@
 # MegaRAC-Next
 
-把技嘉 **MZ32-AR0** 主板上的 **AMI MegaRAC SP-X** BMC 管理界面，
+把技嘉主板上的 **AMI MegaRAC SP-X** BMC（ASPEED **AST2500** 管理芯片）管理界面，
 逆向后重制成了一个现代化的 Web UI —— 并附带一个**完全自研的 KVM 播放器**。
 
 原厂界面是十多年前的风格（Bootstrap 3 + jQuery、满屏英文长表），这个重制版用
@@ -11,19 +11,27 @@ Fastify + Vue 3 + Naive UI + ECharts 重写：界面简体中文、暗色优先�
 
 ## 界面
 
-| 仪表盘 | 风扇曲线 |
+| 仪表盘 | 传感器 |
 |---|---|
-| ![仪表盘](docs/images/dashboard.png) | ![风扇](docs/images/fans.png) |
+| ![仪表盘](docs/images/dashboard.png) | ![传感器](docs/images/sensors.png) |
 
-| KVM 远程控制台 | 事件日志（SEL） |
+| 风扇曲线编辑器 | 历史趋势 |
 |---|---|
-| ![KVM](docs/images/kvm.png) | ![SEL](docs/images/sel.png) |
+| ![风扇控制](docs/images/fans.png) | ![历史趋势](docs/images/history.png) |
+
+| 事件日志（SEL） | 系统清单 |
+|---|---|
+| ![SEL](docs/images/sel.png) | ![系统清单](docs/images/inventory.png) |
+
+| KVM 远程控制台 | 电源控制 |
+|---|---|
+| ![KVM](docs/images/kvm.png) | ![电源控制](docs/images/power.png) |
 
 ## 功能
 
 | 页面 | 说明 |
 |---|---|
-| **仪表盘** | BMC 固件 / 主板与 BIOS / 传感器健康统计 / 最热几处 / 风扇转速 + 温度与风扇双实时趋势图 |
+| **仪表盘** | BMC 固件 / 主板与 BIOS / 传感器健康统计 / 会话与运行时长 / 最热几处 / 风扇转速 + 温度与风扇双实时趋势图 |
 | **传感器** | 全量传感器表（读数、单位、健康状态、四档阈值），按类别过滤、只看异常、一键跳历史趋势；未安装的传感器（读数为 0）判为「不适用」而非误报严重 |
 | **电源控制** | 开机 / 关机 / ACPI 软关机 / 硬重启 / 电源循环，均带二次确认 |
 | **风扇控制** | 完整策略编辑器：Step / Slope 算法、源传感器与被控风扇多选、初始占空比、滞回、TDP / 环境温度 / PCIe 执行条件；曲线编辑器支持 6 种预设形状取样为有限数据点（等距或按斜率自适应取点）与增删数据点 |
@@ -42,7 +50,7 @@ Fastify 代理（Node/TS，单进程，持有 BMC 会话）
    ├─ 经典 web API 客户端（逆向所得）
    ├─ Redfish 客户端 + 后台预热器
    └─ KVM 中继（wss → ws）
-BMC（AMI MegaRAC SP-X）
+BMC（AMI MegaRAC SP-X，ASPEED AST2500 管理芯片）
 ```
 
 **数据层**：以**经典 web API 为骨干**（固件、传感器、SEL、电源、风扇曲线、用户、网络——快且稳定），
@@ -58,7 +66,7 @@ BMC（AMI MegaRAC SP-X）
 
 ## KVM 播放器
 
-不复用原厂 `viewer.min.js`，只复用 BMC 自带的 AST2100 解码 worker，整条链路自己实现：
+不复用原厂 `viewer.min.js`，只复用 BMC 自带的解码 worker（固件内 `/libs/kvm/ast/decode_worker.js`），整条链路自己实现：
 
 ```
 BMC ──wss /kvm──► 代理（Node）──ws /api/kvm──► 浏览器
@@ -74,8 +82,10 @@ BMC ──wss /kvm──► 代理（Node）──ws /api/kvm──► 浏览器
 
 ## 快速开始
 
+需要 Node ≥ 24（历史趋势用内置 `node:sqlite`）。
+
 ```bash
-npm install
+npm ci
 
 npm run dev:server   # 代理，默认 http://0.0.0.0:5177
 npm run dev:web      # 前端，默认 http://0.0.0.0:5173
@@ -141,8 +151,8 @@ reverse/           逆向工作区（探针脚本 + 采集样本；AMI 版权产
   （[`docs/API.md` 第 8 节](docs/API.md)）。
 - **部分写操作受限**：用户增删改可用；服务配置写入会被 BMC 拒绝（需扩展权限）；
   日期时间与网络属于高危项，界面已标注其状态。
-- **鼠标指针未在带图形界面的客机验证**：报文已与原厂逐字节核对一致并确认送达，
-  但主机当前停在 ESXi DCUI（本身不支持鼠标）。
+- **相对鼠标在带图形界面的客机上的表现未验证**：USB-HID 报文与原厂逐字节一致，
+  并已确认送达主机；绝对定位模式可正常使用。
 - **Redfish 增补字段可能延迟或缺失**：BMC 的 Redfish 响应慢且偶发不可用，
   所以 BIOS / UUID / 固件组件等增补信息由后台预热提供，界面会标注新鲜度与降级情况。
 - **BMC 会话表仅 148 格**（频繁重启代理会留下孤儿会话把它占满，之后连登录都被拒）。
