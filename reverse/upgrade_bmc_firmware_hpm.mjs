@@ -6,9 +6,10 @@
 // 失败则调用 hpm/exitupdatemode 干净退出，不留残状态。
 import { Agent, fetch as uFetch } from 'undici';
 import { readFileSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const HOST = '192.168.0.200';
-const FILE = 'C:/path/to/MegaRAC-Next/bmc_firmware/126139.bin';
+const FILE = fileURLToPath(new URL('../bmc_firmware/126139.bin', import.meta.url));
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
 const raw = (p, o = {}) => uFetch(`https://${HOST}${p}`, { ...o, dispatcher: agent, signal: AbortSignal.timeout(o.timeoutMs || 900000) });
 const json = (p, o = {}) => raw(p, { ...o, headers: { 'content-type': 'application/json', ...(o.headers || {}) } });

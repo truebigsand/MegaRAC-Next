@@ -7,6 +7,18 @@ reverse/viewer.html
 reverse/kvm_assets/
 reverse/kvm_capture_reference.txt
 
+# 逆向探针与固件刷写的产物：BMC 原始响应 / 抓包 / 元数据、源码与 PDF 摘录、端点清单、
+# 配置快照、固件校验结果、测试镜像——一律不入库（含序列号 / MAC / IP 等设备标识）
+reverse/out_*
+reverse/api_endpoints_raw.txt
+reverse/redfish_metadata.xml
+reverse/test.iso
+reverse/pre_upgrade_snapshot.json
+reverse/bmc_config_backup.bin
+reverse/firmware_verification.json
+reverse/samples/
+reverse/profiles/
+
 # Node
 node_modules/
 dist/

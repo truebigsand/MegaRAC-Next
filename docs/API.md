@@ -2,7 +2,7 @@
 
 > 逆向对象：`https://192.168.0.200`（技嘉 MZ32-AR0-00 / EPYC 7R32 的 BMC）
 > 固件：AMI MegaRAC SP-X "Scorpio"，Web 显示 12.41.11（fw-info 报 12.65，IPMI rev 12/65），构建日期 Mar 20 2020
-> 逆向方法：前端 bundle 静态分析（`reverse/source.min.js`、`reverse/viewer.min.js`）+ Playwright 页面走查 + 只读 API 实测（`reverse/probe_api.mjs`，全部样本存于 `reverse/samples/probe_results.json`）
+> 逆向方法：前端 bundle 静态分析（`reverse/source.min.js`、`reverse/viewer.min.js`）+ Playwright 页面走查 + 只读 API 实测（`reverse/probe_api.mjs` 抓样本；样本与摘录都是产物，不入库）
 > **纪律**：本文档数据端点均为 GET 实测；写操作协议在 2026-09-28 后逐步实测（风扇档案写入/切换已验证，见 §3），未验证者标注【未实测】。
 
 ---
@@ -242,7 +242,7 @@ Bundle 中 `models/chassis_status`：
 | `/api/settings/media/general` | 媒体重定向全局设置 |
 | `/api/settings/mouse` | KVM 鼠标模式设置 |
 | `/api/settings/ssl/certificate-info` | HTTPS 证书信息 |
-| `/api/fru` 与 `/api/settings/fru` | FRU 内容（BMC_FRU 设备：chassis/board/product 三区，MZ32-AR0-00、SN <board-sn>） |
+| `/api/fru` 与 `/api/settings/fru` | FRU 内容（BMC_FRU 设备：chassis/board/product 三区，含型号与序列号） |
 
 ### 设置页写端点【全部未实测，仅 bundle 逆向】
 - 网络：`POST/PUT /api/settings/network`、`network-bond`、`network/activelancfg`、`settings/dns*`、`settings/static-ipv6`、`settings/ncsi*`
@@ -762,7 +762,7 @@ PUT  /api/maintenance/hpm/exitupdatemode
 |---|---|
 | `reverse/tftp_server.py` | **TFTP 服务**（69 端口回包 + blksize 协商，两个坑都已处理）。放 ESXi/任意 Linux 上跑 |
 | `reverse/flash_via_tftp_full.mjs` | **一条命令走完**：配置位置 → 准备 → 触发下载 → 校验 → 刷写 → 监控到版本变化 |
-| `reverse/pre_upgrade_backup.mjs` | 刷前配置快照（写 `reverse/pre_upgrade_snapshot.json`） |
+| `reverse/pre_upgrade_backup.mjs` | 刷前配置快照（写 `reverse/pre_upgrade_snapshot.json`，产物不入库） |
 | `reverse/config_diff.mjs` | 刷后逐字段对比配置是否保留 |
 | `reverse/monitor_flash.mjs` / `wait_bmc_recover.mjs` | 刷写期间监控、BMC 重启等待 |
 | `reverse/esxi_helper.cjs` | 从 Windows 操作 ESXi（`exec` / `put` / `get`）；⚠️ 路径要用 `MSYS_NO_PATHCONV=1`，否则 Git Bash 会把 `/vmfs/...` 改写成 Windows 路径 |

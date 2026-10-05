@@ -35,7 +35,7 @@ try {
 }
 
 // 2) 再试上传小文件
-const tiny = readFileSync('C:/path/to/MegaRAC-Next/bmc_firmware/tiny_fake.bin');
+const tiny = readFileSync(new URL('../bmc_firmware/tiny_fake.bin', import.meta.url));
 const fd = new FormData();
 fd.append('fwimage', new Blob([tiny]), 'tiny_fake.bin');
 try {

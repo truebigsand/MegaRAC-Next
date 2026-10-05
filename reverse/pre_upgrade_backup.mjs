@@ -60,7 +60,7 @@ for (const p of [
   console.log(`[${p}] ${brief}`);
 }
 
-writeFileSync('C:/path/to/MegaRAC-Next/reverse/pre_upgrade_snapshot.json', JSON.stringify(snapshot, null, 2));
+writeFileSync(new URL('./pre_upgrade_snapshot.json', import.meta.url), JSON.stringify(snapshot, null, 2));
 console.log('\n快照已写入 reverse/pre_upgrade_snapshot.json');
 
 // 让 BMC 生成一份配置备份（不改配置本身）
@@ -71,7 +71,7 @@ try {
   console.log('download_config →', d.status, d.headers.get('content-type'), d.headers.get('content-length'));
   if (d.status === 200) {
     const buf = Buffer.from(await d.arrayBuffer());
-    writeFileSync('C:/path/to/MegaRAC-Next/reverse/bmc_config_backup.bin', buf);
+    writeFileSync(new URL('./bmc_config_backup.bin', import.meta.url), buf);
     console.log('备份已保存 reverse/bmc_config_backup.bin', buf.length, '字节');
   }
 } catch (e) {

@@ -79,7 +79,7 @@ setTimeout(() => {
   for (const s of states) console.log(' ', s);
   console.log(`\n视频包 ${packets} / 完整帧 ${frames} / 共 ${(bytes / 1024).toFixed(1)} KB`);
   if (lastFrame) {
-    const out = 'C:/path/to/MegaRAC-Next/reverse/kvm_assets/frame_capture.bin';
+    const out = new URL('./kvm_assets/frame_capture.bin', import.meta.url);
     writeFileSync(out, lastFrame);
     console.log('末帧已存至', out, '（AST2100 压缩数据，供解码对照）');
   }

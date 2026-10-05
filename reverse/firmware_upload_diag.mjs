@@ -18,7 +18,7 @@ const h = { cookie, 'x-csrftoken': login.CSRFToken };
 
 // 造一个 1KB 的假"固件"
 const tiny = Buffer.alloc(1024, 0x41);
-writeFileSync('C:/path/to/MegaRAC-Next/bmc_firmware/tiny_fake.bin', tiny);
+writeFileSync(new URL('../bmc_firmware/tiny_fake.bin', import.meta.url), tiny);
 
 const variants = [
   ['小文件 + 字段名 fwimage', () => {

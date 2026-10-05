@@ -3,9 +3,11 @@
 #   2) flash-progress 的 state 取值含义
 #   3) 响应里 cc 字段是什么
 import re
+from pathlib import Path
 
-SRC = r'C:\path\to\MegaRAC-Next\reverse\source.min.js'
-OUT = r'C:\path\to\MegaRAC-Next\reverse\out_firmware_js.txt'
+REVERSE = Path(__file__).resolve().parent
+SRC = REVERSE / 'source.min.js'
+OUT = REVERSE / 'out_firmware_js.txt'
 d = open(SRC, encoding='utf-8', errors='replace').read()
 buf = []
 

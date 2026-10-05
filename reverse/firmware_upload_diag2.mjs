@@ -21,7 +21,7 @@ console.log('登录 ok=', login.ok);
 const fm = await raw('/api/maintenance/flash', { method: 'PUT', headers: { ...h, 'content-type': 'application/json' }, body: '{}' });
 console.log('进入刷写模式 →', fm.status, brief(await fm.text()));
 
-const tiny = readFileSync('C:/path/to/MegaRAC-Next/bmc_firmware/tiny_fake.bin');
+const tiny = readFileSync(new URL('../bmc_firmware/tiny_fake.bin', import.meta.url));
 const xhrHeaders = {
   accept: 'application/json, text/javascript, */*; q=0.01',
   'x-requested-with': 'XMLHttpRequest',

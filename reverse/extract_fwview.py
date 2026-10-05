@@ -1,9 +1,11 @@
 # 提取原版「固件升级」视图完整实现（FirmwareUpgradeView 及相关的 HTTPS 上传分支）。
 # 找的是：上传请求的精确形态、httpsFlag 何时为真、cc:-1 的触发条件。
 import re
+from pathlib import Path
 
-SRC = r'C:\path\to\MegaRAC-Next\reverse\source.min.js'
-OUT = r'C:\path\to\MegaRAC-Next\reverse\out_fwview.txt'
+REVERSE = Path(__file__).resolve().parent
+SRC = REVERSE / 'source.min.js'
+OUT = REVERSE / 'out_fwview.txt'
 d = open(SRC, encoding='utf-8', errors='replace').read()
 
 # 视图定义起点

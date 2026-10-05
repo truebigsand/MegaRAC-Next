@@ -5,7 +5,8 @@
 //   ESXI_PASS=... node reverse/esxi_helper.cjs get  <远端文件> <本地路径>
 // 环境变量: ESXI_HOST(默认 192.168.0.201) ESXI_USER(默认 root) ESXI_PASS
 const path = require('node:path');
-const { Client } = require('ssh2');
+// ssh2 不在本仓库依赖里：按需 `npm i ssh2`，或用 SSH2_PATH 指向本机已有安装
+const { Client } = require(process.env.SSH2_PATH || 'ssh2');
 const fs = require('node:fs');
 
 const HOST = process.env.ESXI_HOST || '192.168.0.201';

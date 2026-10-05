@@ -10,9 +10,10 @@
 // 刷写期间 BMC 重启，主机与虚拟机不受影响。
 import { Agent, fetch as uFetch } from 'undici';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const HOST = process.env.BMC_HOST || '192.168.0.200';
-const FILE = process.env.FW_FILE || 'C:/path/to/MegaRAC-Next/bmc_firmware/126139.bin';
+const FILE = process.env.FW_FILE || fileURLToPath(new URL('../bmc_firmware/126139.bin', import.meta.url));
 const PRESERVE = process.env.PRESERVE_CONFIG !== '0';
 const agent = new Agent({ connect: { rejectUnauthorized: false } });
 const raw = (p, o = {}) => uFetch(`https://${HOST}${p}`, { ...o, dispatcher: agent, signal: AbortSignal.timeout(o.timeoutMs || 900000) });
@@ -85,7 +86,7 @@ for (let i = 0; i < 20; i++) {
   await sleep(5000);
 }
 if (!verify) { log('   校验未通过，终止'); clearInterval(keepalive); process.exit(4); }
-writeFileSync('C:/path/to/MegaRAC-Next/reverse/firmware_verification.json', verify);
+writeFileSync(new URL('./firmware_verification.json', import.meta.url), verify);
 const vStatus = (() => { try { const d = JSON.parse(verify); return Array.isArray(d) ? d[0]?.verification_status : d.verification_status; } catch { return undefined; } })();
 log(`   verification_status = ${vStatus}`);
 
